@@ -147,7 +147,7 @@ A script located at `$METRON_HOME/bin/start_batch_profiler.sh` has been provided
 
   * The script either 
        * builds the profiles defined in `$METRON_HOME/config/zookeeper/profiler.json`. or
-       * utilises the profiles already loaded into zookeeper quorunm at `$ZOOKEEPER` if the environment variable `$SPARK_PROFILER_USE_ZOOKEEPER` is set.
+       * utilises the profiles already loaded into zookeeper quorum at `$ZOOKEEPER` if the environment variable `$SPARK_PROFILER_USE_ZOOKEEPER` is set.
   * The properties defined in `$METRON_HOME/config/batch-profiler.properties` are passed to both the Profiler and Spark.  You can define both Spark and Profiler properties in this same file.
 
   * The script assumes that Spark is installed at `/usr/hdp/current/spark2-client`.  This can be overridden if you define an environment variable called `SPARK_HOME` prior to executing the script.
