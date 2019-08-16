@@ -12,14 +12,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 public class MetronConfigLoader implements ConfigLoader {
   private static final String DEFAULT_ENVELOPE_CONFIG_PATH = "envelope.config";
-
-  private static final String ZOOKEEPER = "Zookeeper";    String sensorType = topicToSensorMap.get(topic);
-
-
+  private static final String ZOOKEEPER = "Zookeeper";
   private static final String ZOOKEEPER_NODE_NAME = "ZookeeperNodeName";
 
   private static Logger LOG = LoggerFactory.getLogger(MetronConfigLoader.class);
@@ -35,6 +33,10 @@ public class MetronConfigLoader implements ConfigLoader {
     this.metronConfig = config;
   }
 
+  /**
+   * Needs to return a Metron config object
+   * @return
+   */
   @Override
   public Config getConfig() {
     Objects.requireNonNull(zookeeperQuorum);
@@ -77,7 +79,7 @@ public class MetronConfigLoader implements ConfigLoader {
   }
 
   private Config extractConfig(byte[] updatedBytes) {
-    return ConfigFactory.parseString(new String(updatedBytes, Charset.forName("UTF8")), ConfigParseOptions.defaults());
+    return ConfigFactory.parseString(new String(updatedBytes, StandardCharsets.UTF_8), ConfigParseOptions.defaults());
   }
 
   @Override

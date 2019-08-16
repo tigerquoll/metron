@@ -36,6 +36,7 @@
         <module>metron-interface</module>
         <module>site-book</module>
         <module>metron-stellar</module>
+        <module>metron-envelope</module>
     </modules>
 
     <!--
