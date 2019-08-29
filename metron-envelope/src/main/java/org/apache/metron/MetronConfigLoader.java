@@ -1,3 +1,20 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.metron;
 
 import com.cloudera.labs.envelope.configuration.ConfigLoader;
@@ -26,34 +43,28 @@ public class MetronConfigLoader implements ConfigLoader {
   private String zookeeperNodeName;
 
   private volatile Config metronConfig;
-  private synchronized Config getMetronConfig() {
-    return metronConfig;
-  }
+
   private synchronized void setMetronConfig(Config config) {
     this.metronConfig = config;
   }
 
   /**
-   * Needs to return a Metron config object
+   * Gets or creates a new metron config
    * @return
    */
   @Override
-  public Config getConfig() {
+  public synchronized Config getConfig() {
     Objects.requireNonNull(zookeeperQuorum);
     try {
-      if (getMetronConfig() == null) {
-        synchronized (MetronConfigLoader.class) {
-          if (getMetronConfig() == null) {
-            final CuratorFramework zkClient = ZookeeperClient.getZKInstance(zookeeperQuorum);
-            setMetronConfig(readMetronConfigFromZK(zkClient));
-            setDataWatch(zkClient);
-          }
-        }
+      if (metronConfig == null) {
+        final CuratorFramework zkClient = ZookeeperClient.getZKInstance(zookeeperQuorum);
+        setMetronConfig(readMetronConfigFromZK(zkClient));
+        setDataWatch(zkClient);
       }
     } catch (Exception e) {
       LOG.error("Error reading configuration form zookeeper", e);
     }
-    return getMetronConfig();
+    return metronConfig;
   }
 
   private Config readMetronConfigFromZK(final CuratorFramework zkClient) throws Exception {
@@ -66,11 +77,9 @@ public class MetronConfigLoader implements ConfigLoader {
       zkClient.checkExists()
               .usingWatcher((CuratorWatcher) watchedEvent -> {
                 if (watchedEvent.getType() == Watcher.Event.EventType.NodeDataChanged) {
-                  LOG.info("Change of configuration detected");
-                  setMetronConfig(readMetronConfigFromZK(zkClient));
+                  LOG.info("Change of configuration detected - forcing a reload next time config needed");
+                  setMetronConfig(null);
                 }
-                // a watch only throws once, then it needs to be reset.
-                setDataWatch(zkClient);
               })
               .forPath(zookeeperNodeName);
     } catch (Exception e) {

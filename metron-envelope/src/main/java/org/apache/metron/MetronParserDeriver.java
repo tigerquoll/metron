@@ -1,3 +1,20 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.metron;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
@@ -25,6 +42,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ZOOKEEPER = "zookeeper";
   private String zookeeperQuorum;
 
+
   @Override
   public String getAlias() {
     return ALIAS;
@@ -49,7 +67,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
         final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(mapper, zookeeperQuorum);
         // we can get away with this as long as the iterator is only used once;
         // we use iterator transforms so we can stream iterator processing
-        // so we do not require the entire dataset to be pulled into memory at once
+        // which means we do not require the entire dataset to be pulled into memory at once
         return FluentIterable.from(() -> iterator)
                 // transformAndConcat is the guava equivalent of a flatmap
                 .transformAndConcat(metronSparkPartitionParser)

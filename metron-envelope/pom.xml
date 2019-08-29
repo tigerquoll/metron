@@ -27,12 +27,28 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <scala.version>2.11</scala.version>
         <spark.version>2.1.0</spark.version>
+        <metrics.version>4.0.0</metrics.version>
     </properties>
     <dependencies>
         <dependency>
             <groupId>com.fasterxml.jackson.dataformat</groupId>
             <artifactId>jackson-dataformat-cbor</artifactId>
             <version>2.9.5</version>
+        </dependency>
+        <dependency>
+            <groupId>com.groupon.dse</groupId>
+            <artifactId>spark-metrics</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.dropwizard.metrics</groupId>
+            <artifactId>metrics-core</artifactId>
+            <version>${metrics.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.joshelser</groupId>
+            <artifactId>dropwizard-metrics-hadoop-metrics2-reporter</artifactId>
+            <version>0.1.2</version>
         </dependency>
         <dependency>
             <groupId>com.cloudera.labs.envelope</groupId>

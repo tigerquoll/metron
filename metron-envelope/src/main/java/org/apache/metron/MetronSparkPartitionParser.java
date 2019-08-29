@@ -1,15 +1,35 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.metron;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.translate.Translator;
 import com.cloudera.labs.envelope.utils.RowUtils;
+import com.codahale.metrics.MetricRegistry;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
+import com.github.joshelser.dropwizard.metrics.hadoop.HadoopMetrics2Reporter;
 import com.google.common.collect.Iterables;
 import envelope.shaded.com.google.common.collect.ImmutableList;
 import envelope.shaded.com.google.common.collect.ImmutableMap;
 import org.apache.curator.framework.CuratorFramework;
+import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.metron.common.configuration.ConfigurationsUtils;
 import org.apache.metron.common.configuration.ParserConfigurations;
 import org.apache.metron.common.configuration.SensorParserConfig;
@@ -39,6 +59,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -68,6 +89,22 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   private ParserConfigurations parserConfigurations = new ParserConfigurations();
   private Map<String, String> topicToSensorMap;
 
+  private MetricRegistry metricRegistry;
+  private MetricsSystem metricsSystem;
+  private String recordName = "myserver";
+  private HadoopMetrics2Reporter metrics2Reporter;
+
+  public void setupMetrics() {
+    metricRegistry = new MetricRegistry();
+    metricsSystem = new MetricsSystem();
+
+    recordName = "myserver";
+    metrics2Reporter = HadoopMetrics2Reporter.forRegistry(metricRegistry)
+            .convertDurationsTo(TimeUnit.MILLISECONDS)
+            .convertRatesTo(TimeUnit.SECONDS)
+            .build(mockMetricsSystem, "MyServer", "My Cool Server", recordName);
+  }
+
   /**
    * Schema of processed data
    */
@@ -94,8 +131,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   }
 
   /**
-   * This object gets reconstructed for every partition of data, so it re-reads its configuration fresh
-   * from zookeeper
+   * This object gets reconstructed for every partition of data,
+   * so it re-reads its configuration fresh from zookeeper
    * @param mapper  Object Serialisation context
    * @param zookeeperQuorum Zookeeper address of configuration
    * @throws Exception if zookeeper error occurs
@@ -177,7 +214,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * Run the configured list of Metron Parsers across the passed Row
    * If any errors are present, pass them back encoded into the return row values
    * Input rows are expected to
-   * Output row schema stored in 'providedSchema'
+   * Output spark sql rows of processed data (success and errors) with schema 'outputSchema'
    */
   @Nullable
   @Override
@@ -185,14 +222,14 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     final ParserRunnerResults<JSONObject> runnerResults = getResults(row);
 
     final List<Row> encodedResults = runnerResults.getMessages().stream()
-            .map(this::encodeResult)
+            .map(this::encodeResultIntoSparkRow)
             .collect(Collectors.toList());
 
     List<Row> encodedErrors = Collections.emptyList();
     final List<MetronError> metronErrors = runnerResults.getErrors();
     if ((metronErrors != null) && (metronErrors.size() > 0)) {
       encodedErrors = metronErrors.stream()
-              .map(this::encodeErrors)
+              .map(this::encodeErrorIntoSparkRow)
               .collect(Collectors.toList());
     }
     return Iterables.concat(encodedResults, encodedErrors);
@@ -203,7 +240,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param metronError The error to encode
    * @return Spark row encoded to our output schema
    */
-  private RowWithSchema encodeErrors(MetronError metronError) {
+  private RowWithSchema encodeErrorIntoSparkRow(MetronError metronError) {
     Object errorInd = RowUtils.toRowValue(true, DataTypes.BooleanType);
     Object errorData;
     try {
@@ -224,7 +261,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param parsedMessage The parsed message
    * @return Spark row encoded to our output schema
    */
-  private RowWithSchema encodeResult(JSONObject parsedMessage) {
+  private RowWithSchema encodeResultIntoSparkRow(JSONObject parsedMessage) {
     Object dataval;
     try {
       dataval = RowUtils.toRowValue(mapper.writeValueAsBytes(parsedMessage), DataTypes.BinaryType);
