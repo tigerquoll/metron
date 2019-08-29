@@ -41,6 +41,6 @@ public class JsonEncodingStategy implements SparkRowEncodingStrategy {
 
   @Override
   public RowWithSchema encodeResultIntoSparkRow(JSONObject parsedMessage) {
-    return encodeJsonString( parsedMessage.toJSONString());
+    return encodeJsonString(parsedMessage.toJSONString());
   }
 }

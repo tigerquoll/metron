@@ -15,10 +15,8 @@ import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
 
 public class CborEncodingStrategy implements SparkRowEncodingStrategy {
-  private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(CborEncodingStrategy.class);
   private static final Object versionTag = RowUtils.toRowValue(1, DataTypes.ShortType);
-  private ObjectMapper mapper;
-
+  private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(CborEncodingStrategy.class);
   /**
    * Schema of processed data
    */
@@ -28,8 +26,9 @@ public class CborEncodingStrategy implements SparkRowEncodingStrategy {
           // JSON data encoded into Concise Binary Object Representation (CBOR) see RFC 7049 for specific details
           DataTypes.createStructField("cborvalue", DataTypes.BinaryType, false),
           // Does cbordata contain a Metron Parse output or a Metron Error object
-          DataTypes.createStructField( "isErrorValue", DataTypes.BooleanType, false)
+          DataTypes.createStructField("isErrorValue", DataTypes.BooleanType, false)
   });
+  private transient ObjectMapper mapper = null;
 
   @Override
   public StructType getOutputSchema() {
@@ -37,13 +36,14 @@ public class CborEncodingStrategy implements SparkRowEncodingStrategy {
   }
 
   @Override
-  public void init() {
+  public synchronized void init() {
     final CBORFactory f = new CBORFactory();
     mapper = new ObjectMapper(f);
   }
 
   /**
    * Encode a metron parse error into a Spark row
+   *
    * @param metronError The error to encode
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
@@ -54,6 +54,7 @@ public class CborEncodingStrategy implements SparkRowEncodingStrategy {
 
   /**
    * Encode a metron parse result into a Spark row
+   *
    * @param parsedMessage The parsed message
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
@@ -64,20 +65,21 @@ public class CborEncodingStrategy implements SparkRowEncodingStrategy {
 
   /**
    * Encodes a metron parse result into a Spark row
-   * @param obj  The object to encode
+   *
+   * @param obj            The object to encode
    * @param errorIndicator If this object represents an error at all
    * @return Spar row encoded to out outut schema, null if a serialisation error occurred
    */
   private RowWithSchema encodeSparkRow(Object obj, boolean errorIndicator) {
-    byte [] data;
+    byte[] data;
     try {
       data = mapper.writeValueAsBytes(obj);
     } catch (JsonProcessingException e) {
       LOGGER.error("Error serialising metron parse error", e);
       return null;
     }
-    Object errorData = RowUtils.toRowValue(data, DataTypes.BinaryType);
+    Object sparkValue = RowUtils.toRowValue(data, DataTypes.BinaryType);
     final Object errorInd = RowUtils.toRowValue(errorIndicator, DataTypes.BooleanType);
-    return new RowWithSchema(outputSchema, ImmutableList.of(versionTag, errorData, errorInd));
+    return new RowWithSchema(outputSchema, ImmutableList.of(versionTag, sparkValue, errorInd));
   }
 }

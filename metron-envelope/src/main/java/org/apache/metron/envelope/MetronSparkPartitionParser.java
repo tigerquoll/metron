@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,14 +17,9 @@
  */
 package org.apache.metron.envelope;
 
-import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.translate.Translator;
-import com.cloudera.labs.envelope.utils.RowUtils;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.google.common.collect.Iterables;
-import envelope.shaded.com.google.common.collect.ImmutableList;
 import envelope.shaded.com.google.common.collect.ImmutableMap;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.metron.common.configuration.ConfigurationsUtils;
@@ -35,7 +30,7 @@ import org.apache.metron.common.message.metadata.MetadataUtil;
 import org.apache.metron.common.message.metadata.RawMessage;
 import org.apache.metron.common.message.metadata.RawMessageStrategy;
 import org.apache.metron.common.utils.LazyLogger;
-import org.apache.metron.envelope.encoding.CborEncodingStrategy;
+import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.metron.parsers.ParserRunner;
 import org.apache.metron.parsers.ParserRunnerImpl;
@@ -45,15 +40,11 @@ import org.apache.metron.stellar.common.utils.JSONUtils;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
-import org.apache.metron.common.utils.LazyLoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -71,26 +62,22 @@ import static org.apache.metron.stellar.common.configuration.ConfigurationsUtils
  * This class assumes that data is incoming via Kafka, c.f. extractMetadata() for the implementation of that assumption
  */
 public class MetronSparkPartitionParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>> {
-  private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
-
   private static final String KAFKA_TOPICNAME_FIELD = "topic";
   private static final String KAFKA_TIMESTAMP_FIELD = "timestamp";
   private static final String KAFKA_PARTITION_FIELD = "partition";
   private static final String KAFKA_OFFSET_FIELD = "offset";
-
   private static final String ENVELOPE_KAFKA_TOPICNAME_FIELD = KAFKA_TOPICNAME_FIELD;
   private static final String ENVELOPE_KAFKA_TIMESTAMP_FIELD = KAFKA_TIMESTAMP_FIELD;
   private static final String ENVELOPE_KAFKA_PARTITION_FIELD = KAFKA_PARTITION_FIELD;
   private static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
-
-
+  private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
   private Map<String, Object> globalConfig;
   private String zookeeperQuorum;
   private ParserRunner<JSONObject> envelopeParserRunner;
   private ParserConfigurations parserConfigurations = new ParserConfigurations();
   private Map<String, String> topicToSensorMap;
 
-  private SparkRowEncodingStrategy encodingStrategy = new CborEncodingStrategy();
+  private SparkRowEncodingStrategy encodingStrategy;
   /*
   private MetricRegistry metricRegistry;
   private MetricsSystem metricsSystem;
@@ -111,6 +98,17 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
 
 
   /**
+   * This object gets reconstructed for every partition of data,
+   * so it re-reads its configuration fresh from zookeeper
+   * @param zookeeperQuorum Zookeeper address of configuration
+   * @throws Exception if zookeeper error occurs
+   */
+  MetronSparkPartitionParser(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) throws Exception {
+    this.zookeeperQuorum = zookeeperQuorum;
+    this.encodingStrategy = rowEncodingStrategy;
+  }
+
+  /**
    * Encodes assumptions about input data format
    * @param row Row of data extracted from Kafka
    * @return extracted metadata
@@ -124,13 +122,10 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   }
 
   /**
-   * This object gets reconstructed for every partition of data,
-   * so it re-reads its configuration fresh from zookeeper
-   * @param zookeeperQuorum Zookeeper address of configuration
-   * @throws Exception if zookeeper error occurs
+   * Prepares the object for processing
    */
-  MetronSparkPartitionParser(String zookeeperQuorum) throws Exception {
-    this.zookeeperQuorum = zookeeperQuorum;
+  public void init() throws Exception {
+    this.encodingStrategy.init();
     CuratorFramework curatorFramework = ZookeeperClient.getZKInstance(zookeeperQuorum);
     globalConfig = fetchGlobalConfig(curatorFramework);
     ConfigurationsUtils.updateParserConfigsFromZookeeper(parserConfigurations, curatorFramework);
@@ -152,13 +147,13 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    */
   private Map<String, Object> fetchGlobalConfig(CuratorFramework zkClient) throws Exception {
     byte[] raw = readGlobalConfigBytesFromZookeeper(zkClient);
-    return JSONUtils.INSTANCE.load( new ByteArrayInputStream(raw), JSONUtils.MAP_SUPPLIER);
+    return JSONUtils.INSTANCE.load(new ByteArrayInputStream(raw), JSONUtils.MAP_SUPPLIER);
   }
 
   /**
    * Used to map incoming data to the processing configured for all data coming from that sensor
    * @param sensorTypes  All of the sensor types
-   * @return  Map of sensor data to configured processing settings
+   * @return Map of sensor data to configured processing settings
    */
   private Map<String, String> createTopicToSensorMap(final Collection<String> sensorTypes) {
     final Map<String, String> retval = new HashMap<>();
@@ -184,7 +179,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param row Row of spark input data that Metron needs to process (as spark kafka input schema)
    * @return Metron parser results
    */
-  private ParserRunnerResults<JSONObject> getResults(Row row)  {
+  private ParserRunnerResults<JSONObject> getResults(Row row) {
     // Get original message and extract metadata (such as source topic which we can get source) from it
     final byte[] originalMessage = row.getAs(Translator.VALUE_FIELD_NAME);
     Map<String, Object> metadata = extractMetadata(row);

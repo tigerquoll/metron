@@ -5,7 +5,9 @@ import org.apache.metron.common.error.MetronError;
 import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
 
-public interface SparkRowEncodingStrategy {
+import java.io.Serializable;
+
+public interface SparkRowEncodingStrategy extends Serializable {
   /**
    * Initialise any serialization libraries
    */
@@ -13,12 +15,14 @@ public interface SparkRowEncodingStrategy {
 
   /**
    * Spark schema of the data after it has been parsed by Metron
-   * @return
+   *
+   * @return spark schema struct
    */
   StructType getOutputSchema();
 
   /**
    * Encode a metron parse error into a Spark row
+   *
    * @param metronError The error to encode
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
@@ -26,6 +30,7 @@ public interface SparkRowEncodingStrategy {
 
   /**
    * Encode a metron parse result into a Spark row
+   *
    * @param parsedMessage The parsed message
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */

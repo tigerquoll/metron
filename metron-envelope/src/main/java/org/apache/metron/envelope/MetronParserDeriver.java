@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -19,11 +19,11 @@ package org.apache.metron.envelope;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
+import org.apache.metron.envelope.encoding.CborEncodingStrategy;
+import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -41,7 +41,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "MetronParser";
   private static final String ZOOKEEPER = "zookeeper";
   private String zookeeperQuorum;
-
+  private SparkRowEncodingStrategy encodingStrategy = new CborEncodingStrategy();
 
   @Override
   public String getAlias() {
@@ -55,15 +55,18 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   }
 
   @Override
-  public Dataset<Row> derive(Map<String, Dataset<Row>> map)  {
+  public Dataset<Row> derive(Map<String, Dataset<Row>> map) {
     Preconditions.checkArgument(map.size() == 1, getAlias() + " should only have one dependant dataset");
     final Dataset<Row> src = Iterables.getOnlyElement(map.entrySet()).getValue();
+    final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
+    final String zookeeerQuorum = zookeeperQuorum;
+
     final Dataset<Row> dst = src.mapPartitions(new MapPartitionsFunction<Row, Row>() {
       // The following function gets created from scratch for every spark partition processed
       @Override
       public Iterator<Row> call(Iterator<Row> iterator) throws Exception {
-
-        final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(mapper, zookeeperQuorum);
+        final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(zookeeperQuorum, encodingStrategy);
+        metronSparkPartitionParser.init();
         // we can get away with this as long as the iterator is only used once;
         // we use iterator transforms so we can stream iterator processing
         // which means we do not require the entire dataset to be pulled into memory at once
@@ -72,7 +75,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionParser)
                 .iterator();
       }
-    }, RowEncoder.apply(MetronSparkPartitionParser.getOutputSchema()));
+    }, RowEncoder.apply(encodingStrategy.getOutputSchema()));
 
     return dst;
   }
