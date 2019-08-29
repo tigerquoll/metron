@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron;
+package org.apache.metron.envelope;
 
 import com.cloudera.labs.envelope.configuration.ConfigLoader;
 import com.typesafe.config.Config;
@@ -28,7 +28,6 @@ import org.apache.zookeeper.Watcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -44,7 +43,7 @@ public class MetronConfigLoader implements ConfigLoader {
 
   private volatile Config metronConfig;
 
-  private synchronized void setMetronConfig(Config config) {
+  private synchronized void setConfig(Config config) {
     this.metronConfig = config;
   }
 
@@ -58,7 +57,7 @@ public class MetronConfigLoader implements ConfigLoader {
     try {
       if (metronConfig == null) {
         final CuratorFramework zkClient = ZookeeperClient.getZKInstance(zookeeperQuorum);
-        setMetronConfig(readMetronConfigFromZK(zkClient));
+        metronConfig = readMetronConfigFromZK(zkClient);
         setDataWatch(zkClient);
       }
     } catch (Exception e) {
@@ -69,7 +68,7 @@ public class MetronConfigLoader implements ConfigLoader {
 
   private Config readMetronConfigFromZK(final CuratorFramework zkClient) throws Exception {
     final byte[] configBytes = zkClient.getData().forPath(zookeeperNodeName);
-    return extractConfig(configBytes);
+    return ConfigFactory.parseString(new String(configBytes, StandardCharsets.UTF_8), ConfigParseOptions.defaults());
   }
 
   private void setDataWatch(final CuratorFramework zkClient) {
@@ -78,17 +77,13 @@ public class MetronConfigLoader implements ConfigLoader {
               .usingWatcher((CuratorWatcher) watchedEvent -> {
                 if (watchedEvent.getType() == Watcher.Event.EventType.NodeDataChanged) {
                   LOG.info("Change of configuration detected - forcing a reload next time config needed");
-                  setMetronConfig(null);
+                  setConfig(null);
                 }
               })
               .forPath(zookeeperNodeName);
     } catch (Exception e) {
       LOG.error("Error setting data watch on Metron config node", e);
     }
-  }
-
-  private Config extractConfig(byte[] updatedBytes) {
-    return ConfigFactory.parseString(new String(updatedBytes, StandardCharsets.UTF_8), ConfigParseOptions.defaults());
   }
 
   @Override

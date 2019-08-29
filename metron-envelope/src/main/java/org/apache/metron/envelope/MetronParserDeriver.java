@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron;
+package org.apache.metron.envelope;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
@@ -62,8 +62,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
       // The following function gets created from scratch for every spark partition processed
       @Override
       public Iterator<Row> call(Iterator<Row> iterator) throws Exception {
-        final CBORFactory f = new CBORFactory();
-        final ObjectMapper mapper = new ObjectMapper(f);
+
         final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(mapper, zookeeperQuorum);
         // we can get away with this as long as the iterator is only used once;
         // we use iterator transforms so we can stream iterator processing
