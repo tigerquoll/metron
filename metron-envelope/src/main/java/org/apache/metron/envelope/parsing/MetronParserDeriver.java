@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron.envelope;
+package org.apache.metron.envelope.parsing;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
@@ -40,7 +40,7 @@ import java.util.Objects;
 public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "MetronParser";
   private static final String ZOOKEEPER = "zookeeper";
-  private String zookeeperQuorum;
+  private String zookeeperQuorum = null;
   private SparkRowEncodingStrategy encodingStrategy = new CborEncodingStrategy();
 
   @Override
@@ -55,11 +55,11 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   }
 
   @Override
-  public Dataset<Row> derive(Map<String, Dataset<Row>> map) {
-    Preconditions.checkArgument(map.size() == 1, getAlias() + " should only have one dependant dataset");
-    final Dataset<Row> src = Iterables.getOnlyElement(map.entrySet()).getValue();
+  public Dataset<Row> derive(Map<String, Dataset<Row>> srcDataset) {
+    Preconditions.checkArgument(srcDataset.size() == 1, getAlias() + " should only have one dependant dataset");
+    final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
-    final String zookeeerQuorum = zookeeperQuorum;
+    final String zookeeperQuorum = this.zookeeperQuorum;
 
     final Dataset<Row> dst = src.mapPartitions(new MapPartitionsFunction<Row, Row>() {
       // The following function gets created from scratch for every spark partition processed
@@ -75,7 +75,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionParser)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getOutputSchema()));
+    }, RowEncoder.apply(encodingStrategy.getParserOutputSchema()));
 
     return dst;
   }

@@ -15,15 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron.envelope;
+package org.apache.metron.envelope.parsing;
 
 import com.cloudera.labs.envelope.translate.Translator;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.google.common.collect.Iterables;
 import envelope.shaded.com.google.common.collect.ImmutableMap;
-import org.apache.curator.framework.CuratorFramework;
-import org.apache.metron.common.configuration.ConfigurationsUtils;
-import org.apache.metron.common.configuration.ParserConfigurations;
 import org.apache.metron.common.configuration.SensorParserConfig;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.message.metadata.MetadataUtil;
@@ -31,20 +28,19 @@ import org.apache.metron.common.message.metadata.RawMessage;
 import org.apache.metron.common.message.metadata.RawMessageStrategy;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
+import org.apache.metron.envelope.ZookeeperClient;
+import org.apache.metron.envelope.config.ParserConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.metron.parsers.ParserRunner;
 import org.apache.metron.parsers.ParserRunnerImpl;
 import org.apache.metron.parsers.ParserRunnerResults;
 import org.apache.metron.stellar.common.CachingStellarProcessor;
-import org.apache.metron.stellar.common.utils.JSONUtils;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
 
 import javax.annotation.Nullable;
-import java.io.ByteArrayInputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -54,8 +50,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-
-import static org.apache.metron.stellar.common.configuration.ConfigurationsUtils.readGlobalConfigBytesFromZookeeper;
 
 /**
  * Responsible for Initialising and running metron parsers over a a spark partition's worth of incoming data from Kafka.
@@ -71,41 +65,22 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   private static final String ENVELOPE_KAFKA_PARTITION_FIELD = KAFKA_PARTITION_FIELD;
   private static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
   private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
-  private Map<String, Object> globalConfig;
+
+  private ParserConfigManager parserConfigManager;
   private String zookeeperQuorum;
-  private ParserRunner<JSONObject> envelopeParserRunner;
-  private ParserConfigurations parserConfigurations = new ParserConfigurations();
-  private Map<String, String> topicToSensorMap;
-
   private SparkRowEncodingStrategy encodingStrategy;
-  /*
-  private MetricRegistry metricRegistry;
-  private MetricsSystem metricsSystem;
-  private String recordName = "myserver";
-  private HadoopMetrics2Reporter metrics2Reporter;
-
-  public void setupMetrics() {
-    metricRegistry = new MetricRegistry();
-    metricsSystem = new MetricsSystem();
-
-    recordName = "myserver";
-    metrics2Reporter = HadoopMetrics2Reporter.forRegistry(metricRegistry)
-            .convertDurationsTo(TimeUnit.MILLISECONDS)
-            .convertRatesTo(TimeUnit.SECONDS)
-            .build(mockMetricsSystem, "MyServer", "My Cool Server", recordName);
-  }
-*/
-
+  private ParserRunner<JSONObject> envelopeParserRunner;
+  private Map<String, String> topicToSensorMap;
 
   /**
    * This object gets reconstructed for every partition of data,
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
-   * @throws Exception if zookeeper error occurs
    */
-  MetronSparkPartitionParser(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) throws Exception {
+  MetronSparkPartitionParser(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = zookeeperQuorum;
     this.encodingStrategy = rowEncodingStrategy;
+    this.parserConfigManager = new ParserConfigManager(zookeeperQuorum);
   }
 
   /**
@@ -123,32 +98,17 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
 
   /**
    * Prepares the object for processing
+   * @throws Exception on error
    */
   public void init() throws Exception {
     this.encodingStrategy.init();
-    CuratorFramework curatorFramework = ZookeeperClient.getZKInstance(zookeeperQuorum);
-    globalConfig = fetchGlobalConfig(curatorFramework);
-    ConfigurationsUtils.updateParserConfigsFromZookeeper(parserConfigurations, curatorFramework);
-    List<String> sensorTypes = parserConfigurations.getTypes();
+    final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
     topicToSensorMap = createTopicToSensorMap(sensorTypes);
     envelopeParserRunner = new ParserRunnerImpl(new HashSet<>(sensorTypes));
-    envelopeParserRunner.init(() -> parserConfigurations, initializeStellar(sensorTypes));
+    envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), initializeStellar(sensorTypes));
   }
 
-  private Map<String, Object> getGlobalConfig() {
-    return globalConfig;
-  }
 
-  /**
-   * Fetches the global configuration from Zookeeper.
-   * @param zkClient The Zookeeper client.
-   * @return The global configuration retrieved from Zookeeper.
-   * @throws Exception On read error
-   */
-  private Map<String, Object> fetchGlobalConfig(CuratorFramework zkClient) throws Exception {
-    byte[] raw = readGlobalConfigBytesFromZookeeper(zkClient);
-    return JSONUtils.INSTANCE.load(new ByteArrayInputStream(raw), JSONUtils.MAP_SUPPLIER);
-  }
 
   /**
    * Used to map incoming data to the processing configured for all data coming from that sensor
@@ -158,7 +118,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   private Map<String, String> createTopicToSensorMap(final Collection<String> sensorTypes) {
     final Map<String, String> retval = new HashMap<>();
     for (String sensorType : sensorTypes) {
-      SensorParserConfig parserDriveConfig = parserConfigurations.getSensorParserConfig(sensorType);
+      final SensorParserConfig parserDriveConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
       if (parserDriveConfig != null) {
         parserDriveConfig.init();
         retval.put(parserDriveConfig.getSensorTopic(), sensorType);
@@ -167,10 +127,6 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
       }
     }
     return retval;
-  }
-
-  public StructType getOutputSchema() {
-    return encodingStrategy.getOutputSchema();
   }
 
   /**
@@ -186,14 +142,14 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
 
     // Use metadata to backtrack to the providing sensor so sensor-level configurations can be retrieved and actioned
     final String sensorType = topicToSensorMap.get(metadata.get(ENVELOPE_KAFKA_TOPICNAME_FIELD).toString());
-    final SensorParserConfig parserDriverConfig = parserConfigurations.getSensorParserConfig(sensorType);
+    final SensorParserConfig parserDriverConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
     metadata = AddMetadataPrefixIfConfigured(metadata, parserDriverConfig);
 
     // Pre-process the raw message as configured by the parser driver configuration
     final RawMessage rawMessage = getRawMessage(originalMessage, metadata, parserDriverConfig);
 
     // return the results of running the configured metron parsers over the row
-    return envelopeParserRunner.execute(sensorType, rawMessage, parserConfigurations);
+    return envelopeParserRunner.execute(sensorType, rawMessage, parserConfigManager.getConfigurations());
   }
 
   /**
@@ -208,7 +164,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     final ParserRunnerResults<JSONObject> runnerResults = getResults(row);
 
     final List<Row> encodedResults = runnerResults.getMessages().stream()
-            .map(x -> encodingStrategy.encodeResultIntoSparkRow(x))
+            .map(x -> encodingStrategy.encodeParserResultIntoSparkRow(x))
             .filter(Objects::nonNull)
             .collect(Collectors.toList());
 
@@ -216,7 +172,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     final List<MetronError> metronErrors = runnerResults.getErrors();
     if ((metronErrors != null) && (metronErrors.size() > 0)) {
       encodedErrors = metronErrors.stream()
-              .map(x -> encodingStrategy.encodeErrorIntoSparkRow(x))
+              .map(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x))
               .filter(Objects::nonNull)
               .collect(Collectors.toList());
     }
@@ -231,7 +187,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   private Context initializeStellar(final List<String> sensorTypes) {
     Map<String, Object> cacheConfig = new HashMap<>();
     for (String sensorType : sensorTypes) {
-      SensorParserConfig config = parserConfigurations.getSensorParserConfig(sensorType);
+      SensorParserConfig config = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
       if (config != null) {
         cacheConfig.putAll(config.getCacheConfig());
       }
@@ -240,8 +196,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
 
     Context.Builder builder = new Context.Builder()
             .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
-            .with(Context.Capabilities.GLOBAL_CONFIG, this::getGlobalConfig)
-            .with(Context.Capabilities.STELLAR_CONFIG, this::getGlobalConfig);
+            .with(Context.Capabilities.GLOBAL_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig())
+            .with(Context.Capabilities.STELLAR_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig());
     if (cache != null) {
       builder = builder.with(Context.Capabilities.CACHE, () -> cache);
     }

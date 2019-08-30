@@ -9,6 +9,9 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
 
+/**
+ * Encapsulate the logic on using text/json encoding of Metron
+ */
 public class JsonEncodingStategy implements SparkRowEncodingStrategy {
 
   /**
@@ -25,7 +28,7 @@ public class JsonEncodingStategy implements SparkRowEncodingStrategy {
   }
 
   @Override
-  public StructType getOutputSchema() {
+  public StructType getParserOutputSchema() {
     return outputSchema;
   }
 
@@ -35,12 +38,12 @@ public class JsonEncodingStategy implements SparkRowEncodingStrategy {
   }
 
   @Override
-  public RowWithSchema encodeErrorIntoSparkRow(MetronError metronError) {
+  public RowWithSchema encodeParserErrorIntoSparkRow(MetronError metronError) {
     return encodeJsonString(metronError.getJSONObject().toJSONString());
   }
 
   @Override
-  public RowWithSchema encodeResultIntoSparkRow(JSONObject parsedMessage) {
+  public RowWithSchema encodeParserResultIntoSparkRow(JSONObject parsedMessage) {
     return encodeJsonString(parsedMessage.toJSONString());
   }
 }

@@ -21,13 +21,13 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 
-class ZookeeperClient {
+public class ZookeeperClient {
   private static final int ZK_EXP_BACKOFF_RETRY_MS = 1000;
   private static final int ZK_EXP_BACKOFF_RETRIES = 3;
 
   private static volatile CuratorFramework zkClient;
 
-  static CuratorFramework getZKInstance(final String zookeeperQuorum) {
+  static public CuratorFramework getZKInstance(final String zookeeperQuorum) {
     if (zkClient == null) {
       synchronized (CuratorFramework.class) {
         if (zkClient == null) {
