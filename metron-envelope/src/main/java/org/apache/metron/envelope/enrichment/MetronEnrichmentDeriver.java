@@ -20,27 +20,15 @@ package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
-import com.github.benmanes.caffeine.cache.CacheLoader;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
 import org.apache.metron.common.Constants;
-import org.apache.metron.common.configuration.enrichment.SensorEnrichmentConfig;
 import org.apache.metron.common.error.MetronError;
-import org.apache.metron.common.performance.PerformanceLogger;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
-import org.apache.metron.enrichment.cache.CacheKey;
-import org.apache.metron.enrichment.configuration.Enrichment;
-import org.apache.metron.enrichment.interfaces.EnrichmentAdapter;
-import org.apache.metron.enrichment.utils.EnrichmentUtils;
-import org.apache.metron.envelope.encoding.CborEncodingStrategy;
+import org.apache.metron.envelope.encoding.HybridFieldEncodingStrategy;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
-import org.apache.metron.envelope.parsing.MetronSparkPartitionParser;
-import org.apache.metron.stellar.dsl.Context;
-import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.metron.storm.common.bolt.ConfiguredEnrichmentBolt;
 import org.apache.metron.storm.common.utils.StormErrorUtils;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
@@ -56,13 +44,9 @@ import org.apache.storm.tuple.Values;
 import org.json.simple.JSONObject;
 import parquet.Preconditions;
 
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
-
-import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
 
 /**
  * Uses an adapter to enrich telemetry messages with additional metadata
@@ -87,7 +71,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
   private static final String ZOOKEEPER = "zookeeper";
   private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
   private String zookeeperQuorum = null;
-  private SparkRowEncodingStrategy encodingStrategy = new CborEncodingStrategy();
+  private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
 
   @Override
   // envelope configuration

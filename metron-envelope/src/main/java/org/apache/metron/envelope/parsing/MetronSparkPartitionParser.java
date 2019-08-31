@@ -88,7 +88,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param row Row of data extracted from Kafka
    * @return extracted metadata
    */
-  private Map<String, Object> extractMetadata(org.apache.spark.sql.Row row) {
+  private Map<String, Object> extractKafkaMetadata(org.apache.spark.sql.Row row) {
     return ImmutableMap.of(
             ENVELOPE_KAFKA_TIMESTAMP_FIELD, row.getAs(KAFKA_TIMESTAMP_FIELD),
             ENVELOPE_KAFKA_TOPICNAME_FIELD, row.getAs(KAFKA_TOPICNAME_FIELD),
@@ -138,9 +138,9 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   private ParserRunnerResults<JSONObject> getResults(Row row) {
     // Get original message and extract metadata (such as source topic which we can get source) from it
     final byte[] originalMessage = row.getAs(Translator.VALUE_FIELD_NAME);
-    Map<String, Object> metadata = extractMetadata(row);
+    Map<String, Object> metadata = extractKafkaMetadata(row);
 
-    // Use metadata to backtrack to the providing sensor so sensor-level configurations can be retrieved and actioned
+    // Use kafka metadata to backtrack to the providing sensor so sensor-level configurations can be retrieved and actioned
     final String sensorType = topicToSensorMap.get(metadata.get(ENVELOPE_KAFKA_TOPICNAME_FIELD).toString());
     final SensorParserConfig parserDriverConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
     metadata = AddMetadataPrefixIfConfigured(metadata, parserDriverConfig);
@@ -171,11 +171,14 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     List<Row> encodedErrors = Collections.emptyList();
     final List<MetronError> metronErrors = runnerResults.getErrors();
     if ((metronErrors != null) && (metronErrors.size() > 0)) {
+      // should we  direct errors into a separate kafka queue?
+      // yes
       encodedErrors = metronErrors.stream()
               .map(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x))
               .filter(Objects::nonNull)
               .collect(Collectors.toList());
     }
+
     return Iterables.concat(encodedResults, encodedErrors);
   }
 

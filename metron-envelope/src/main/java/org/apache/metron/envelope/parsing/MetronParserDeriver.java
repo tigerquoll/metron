@@ -22,7 +22,7 @@ import com.cloudera.labs.envelope.derive.Deriver;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
-import org.apache.metron.envelope.encoding.CborEncodingStrategy;
+import org.apache.metron.envelope.encoding.HybridFieldEncodingStrategy;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
@@ -41,7 +41,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "MetronParser";
   private static final String ZOOKEEPER = "zookeeper";
   private String zookeeperQuorum = null;
-  private SparkRowEncodingStrategy encodingStrategy = new CborEncodingStrategy();
+  private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
 
   @Override
   public String getAlias() {
