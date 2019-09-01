@@ -20,6 +20,7 @@ package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
+import com.fasterxml.jackson.core.JsonFactory;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
@@ -42,6 +43,8 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 
+import static org.apache.metron.envelope.utils.ClassUtils.instantiateClass;
+
 /**
  * Uses an adapter to enrich telemetry messages with additional metadata
  * entries. For a list of available enrichment adapters see
@@ -61,16 +64,31 @@ import java.util.Objects;
 
 @SuppressWarnings({"rawtypes", "serial"})
 public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
-  @NotNull private static final String ALIAS = "MetronEnricher";
-  @NotNull private static final String ZOOKEEPER = "zookeeper";
+  @NotNull private static final String ALIAS = "MetronParser";
+  @NotNull private static final String ZOOKEEPER = "ZookeeperQuorum";
+  @NotNull private static final String SERIALISATION_PROVIDER = "SerialisationProvider";
+  @NotNull private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
+  @NotNull private static final String SPARK_ROW_ENCODING_COMPOSITE_TYPE = "SparkRowEncodingCompositeFieldType";
   @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
-  @Null private String zookeeperQuorum = null;
-  @NotNull private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
+
+  private String zookeeperQuorum = null;
+  private JsonFactory jsonFactory = null;
+  private SparkRowEncodingStrategy encodingStrategy = null;
 
   @Override
   // envelope configuration
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
+
+    final String serialisationFactoryName = Objects.requireNonNull(config.getString(SERIALISATION_PROVIDER));
+    jsonFactory = (JsonFactory) instantiateClass(serialisationFactoryName);
+
+    final String compositeFieldTypename = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING_COMPOSITE_TYPE));
+    final SparkRowEncodingStrategy.DataFieldType compositeRowType = SparkRowEncodingStrategy.DataFieldType.valueOf(compositeFieldTypename);
+
+    final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
+    encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
+    encodingStrategy.init(jsonFactory,compositeRowType);
   }
 
   @Override

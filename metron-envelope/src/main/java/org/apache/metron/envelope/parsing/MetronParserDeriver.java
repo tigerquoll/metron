@@ -19,6 +19,7 @@ package org.apache.metron.envelope.parsing;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
+import com.fasterxml.jackson.core.JsonFactory;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
@@ -32,18 +33,28 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import parquet.Preconditions;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.apache.metron.envelope.ClassUtils.instantiateClass;
+import static org.apache.metron.envelope.utils.ClassUtils.instantiateClass;
 
 /**
  * Adapts metron parsers to the Envelope Deriver abstraction
  */
 public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "MetronParser";
-  private static final String ZOOKEEPER = "zookeeper";
+  private static final String ZOOKEEPER = "ZookeeperQuorum";
+  private static final String SERIALISATION_PROVIDER = "SerialisationProvider";
+  private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
+  private static final String SPARK_ROW_ENCODING_COMPOSITE_TYPE = "SparkRowEncodingCompositeFieldType";
+
   private String zookeeperQuorum = null;
-  private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
+  private JsonFactory jsonFactory = null;
+  private SparkRowEncodingStrategy encodingStrategy = null;
 
   @Override
   public String getAlias() {
@@ -54,20 +65,33 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   @Override
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
+
+    final String serialisationFactoryName = Objects.requireNonNull(config.getString(SERIALISATION_PROVIDER));
+    jsonFactory = (JsonFactory) instantiateClass(serialisationFactoryName);
+
+    final String compositeFieldTypename = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING_COMPOSITE_TYPE));
+    final SparkRowEncodingStrategy.DataFieldType compositeRowType = SparkRowEncodingStrategy.DataFieldType.valueOf(compositeFieldTypename);
+
+    final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
+    encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
+    encodingStrategy.init(jsonFactory,compositeRowType);
   }
+
+
 
   @Override
   public Dataset<Row> derive(Map<String, Dataset<Row>> srcDataset) {
     Preconditions.checkArgument(srcDataset.size() == 1, getAlias() + " should only have one dependant dataset");
     final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
+    final JsonFactory jsonFactory = this.jsonFactory;
     final String zookeeperQuorum = this.zookeeperQuorum;
 
     final Dataset<Row> dst = src.mapPartitions(new MapPartitionsFunction<Row, Row>() {
       // The following function gets created from scratch for every spark partition processed
       @Override
       public Iterator<Row> call(Iterator<Row> iterator) throws Exception {
-        final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(zookeeperQuorum, encodingStrategy);
+        final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(zookeeperQuorum, encodingStrategy, jsonFactory);
         metronSparkPartitionParser.init();
         // we can get away with this as long as the iterator is only used once;
         // we use iterator transforms so we can stream iterator processing

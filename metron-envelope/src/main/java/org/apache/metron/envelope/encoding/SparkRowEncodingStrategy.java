@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import envelope.shaded.com.google.common.collect.ImmutableSet;
 import org.apache.metron.common.error.MetronError;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
@@ -15,7 +16,6 @@ import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
 
 import java.io.Serializable;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -31,13 +31,13 @@ public interface SparkRowEncodingStrategy extends Serializable {
   Object ERROR_INDICATOR_FALSE = RowUtils.toRowValue(false, DataTypes.BooleanType);
   Object ERROR_INDICATOR_TRUE = RowUtils.toRowValue(true, DataTypes.BooleanType);
 
-  String VERSION = "_schemaVersion";
+  String SCHEMA_VERSION_FIELD = "_schemaVersion";
   Object VERSION_ONE = RowUtils.toRowValue(1, DataTypes.ShortType);
-  String DATAVALUE = "_dataValue";
+  String DATA_FIELD = "_dataValue";
 
   StructField errorIndFieldSchema = DataTypes.createStructField(ERROR_INDICATOR_FIELD, DataTypes.BooleanType, false);
-  StructField versionFieldSchema = DataTypes.createStructField(VERSION, DataTypes.ShortType, false);
-  Set<String> reservedFieldNames = ImmutableSet.of(VERSION, DATAVALUE, ERROR_INDICATOR_FIELD);
+  StructField versionFieldSchema = DataTypes.createStructField(SCHEMA_VERSION_FIELD, DataTypes.ShortType, false);
+  Set<String> reservedFieldNames = ImmutableSet.of(SCHEMA_VERSION_FIELD, DATA_FIELD, ERROR_INDICATOR_FIELD);
 
   /**
    * Encapsulates the choice of String or Text Field for the Composite Field containing non-standard fields values.
@@ -88,5 +88,11 @@ public interface SparkRowEncodingStrategy extends Serializable {
    */
   RowWithSchema encodeParserResultIntoSparkRow(@NotNull JSONObject parsedMessage) throws JsonProcessingException;
 
+  /**
+   * Decode a parsed message that has been read from Kafka
+   * @param row Message to decode
+   * @return JSONObject containing the message
+   */
+  JSONObject decodeParsedMessage(@NotNull Row row);
 
 }

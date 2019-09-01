@@ -30,11 +30,12 @@ import org.apache.metron.common.message.metadata.RawMessage;
 import org.apache.metron.common.message.metadata.RawMessageStrategy;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
-import org.apache.metron.envelope.Either;
-import org.apache.metron.envelope.ErrorUtils.ErrorInfo;
+import org.apache.metron.envelope.utils.Either;
+import org.apache.metron.envelope.utils.ErrorUtils.ErrorInfo;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.ParserConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
+import org.apache.metron.envelope.utils.SparkKafkaUtils;
 import org.apache.metron.parsers.ParserRunner;
 import org.apache.metron.parsers.ParserRunnerImpl;
 import org.apache.metron.parsers.ParserRunnerResults;
@@ -57,27 +58,21 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.metron.envelope.ErrorUtils.catchErrorsAndNullsWithCause;
+import static org.apache.metron.envelope.utils.ErrorUtils.catchErrorsAndNullsWithCause;
+import static org.apache.metron.envelope.utils.SparkKafkaUtils.ENVELOPE_KAFKA_TOPICNAME_FIELD;
 
 /**
  * Responsible for Initialising and running metron parsers over a a spark partition's worth of incoming data from Kafka.
  * This class assumes that data is incoming via Kafka, c.f. extractMetadata() for the implementation of that assumption
  */
 public class MetronSparkPartitionParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>> {
-  @NotNull private static final String KAFKA_TOPICNAME_FIELD = "topic";
-  @NotNull private static final String KAFKA_TIMESTAMP_FIELD = "timestamp";
-  @NotNull private static final String KAFKA_PARTITION_FIELD = "partition";
-  @NotNull private static final String KAFKA_OFFSET_FIELD = "offset";
-  @NotNull private static final String ENVELOPE_KAFKA_TOPICNAME_FIELD = KAFKA_TOPICNAME_FIELD;
-  @NotNull private static final String ENVELOPE_KAFKA_TIMESTAMP_FIELD = KAFKA_TIMESTAMP_FIELD;
-  @NotNull private static final String ENVELOPE_KAFKA_PARTITION_FIELD = KAFKA_PARTITION_FIELD;
-  @NotNull private static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
   @NotNull public static final String UNKNOWN = "Unknown";
   @NotNull private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
 
   @NotNull private ParserConfigManager parserConfigManager;
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
+  @NotNull private JsonFactory jsonFactory;
   private ParserRunner<JSONObject> envelopeParserRunner;
   private Map<String, String> topicToSensorMap;
 
@@ -86,24 +81,12 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    */
-  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
+  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy,
+                             @NotNull JsonFactory jsonFactory) {
     this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
     this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
+    this.jsonFactory = Objects.requireNonNull(jsonFactory);
     this.parserConfigManager = new ParserConfigManager(zookeeperQuorum);
-  }
-
-  /**
-   * Encodes assumptions about input data format
-   * @param row Row of data extracted from Kafka
-   * @return extracted metadata
-   */
-  @NotNull
-  private Map<String, Object> extractKafkaMetadata(@NotNull Row row) {
-    return ImmutableMap.of(
-            ENVELOPE_KAFKA_TIMESTAMP_FIELD, row.getAs(KAFKA_TIMESTAMP_FIELD),
-            ENVELOPE_KAFKA_TOPICNAME_FIELD, row.getAs(KAFKA_TOPICNAME_FIELD),
-            ENVELOPE_KAFKA_PARTITION_FIELD, row.getAs(KAFKA_PARTITION_FIELD),
-            ENVELOPE_KAFKA_OFFSET_FIELD, row.getAs(KAFKA_OFFSET_FIELD));
   }
 
   /**
@@ -111,14 +94,11 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @throws Exception on error
    */
   public void init() throws Exception {
-    this.encodingStrategy.init(new JsonFactory(), SparkRowEncodingStrategy.DataFieldType.FieldType_String);
     @NotNull final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
     topicToSensorMap = createTopicToSensorMap(sensorTypes);
     envelopeParserRunner = new ParserRunnerImpl(new HashSet<>(sensorTypes));
     envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), initializeStellar(sensorTypes));
   }
-
-
 
   /**
    * Used to map incoming data to the processing configured for all data coming from that sensor
@@ -146,10 +126,11 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param row Row of spark input data that Metron needs to process (as spark kafka input schema)
    * @return Metron parser results
    */
+  @Nullable
   private ParserRunnerResults<JSONObject> getResults(@NotNull Row row) {
     // Get original message and extract metadata (such as source topic which we can get source) from it
     @NotNull final byte[] originalMessage = Objects.requireNonNull(row.getAs(Translator.VALUE_FIELD_NAME));
-    @NotNull Map<String, Object> metadata = extractKafkaMetadata(row);
+    @NotNull Map<String, Object> metadata = SparkKafkaUtils.extractKafkaMetadata(row);
     @NotNull final String kafkaTopic = Objects.requireNonNull(metadata.get(ENVELOPE_KAFKA_TOPICNAME_FIELD)).toString();
 
     // Use kafka metadata to backtrack to the providing sensor so sensor-level configurations can be retrieved and actioned
@@ -183,48 +164,74 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     @NotNull Row row = nullableRow;
 
     // Run Configured Metron parsers across the input data
-    @NotNull final ParserRunnerResults<JSONObject> runnerResults = getResults(row);
+    @NotNull final ParserRunnerResults<JSONObject> runnerResults = Objects.requireNonNull(getResults(row));
 
-    // Encode Metron Parser Results into Spark Rows
-    @NotNull final Stream<Either<ErrorInfo<Exception,JSONObject>,RowWithSchema>> encodedMessages = runnerResults.getMessages()
-            .stream()
-            .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserResultIntoSparkRow(x)));
+    // encode results into Spark Rows
+    @NotNull final List<RowWithSchema> encodedResults = encodeResults(runnerResults.getMessages());
 
-    // report in Serialisation Exceptions
-    encodedMessages.flatMap(Either::getErrorStream)
-            .forEach( x -> LOGGER.error(String.format("Error serialisation Exception %s, JSONMessage %s",
-                    x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
-
-    // collect results
-    @NotNull final List<RowWithSchema> encodedResults = encodedMessages
-            .flatMap(Either::getStream)
-            .collect(Collectors.toList());
-
-    // now do the same for Metron Errors
-    @NotNull final List<RowWithSchema> encodedErrorResults = encodeErrors(runnerResults);
+    // encode Errors into Spark Rows
+    @NotNull final List<RowWithSchema> encodedErrorResults = encodeErrors(runnerResults.getErrors());
 
     return Iterables.concat(encodedResults, encodedErrorResults);
 
   }
 
+  @NotNull
+  private List<RowWithSchema> encodeResults(@Nullable List<JSONObject> results) {
+    @NotNull List<RowWithSchema> encodedResults = Collections.emptyList();
+
+    if ((results != null) && (!results.isEmpty())) {
+      // Encode Metron Parser Results into Spark Rows
+      @NotNull final Stream<Either<ErrorInfo<Exception, JSONObject>, RowWithSchema>> encodedMessages =
+              results.stream()
+                      .flatMap( x -> {
+                        if (x == null) {
+                          LOGGER.warn("Metron Parsing produced a null message - ignoring ");
+                          return Stream.empty();
+                        } else {
+                          return Stream.of(x);
+                        }
+                      })
+                      .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserResultIntoSparkRow(x)));
+
+      // report any Serialisation Exceptions
+      encodedMessages.flatMap(Either::getErrorStream)
+              .forEach(x -> LOGGER.error(String.format("Error serialisation Exception %s, JSONMessage %s",
+                      x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
+
+      // collect results
+      encodedResults = encodedMessages
+              .flatMap(Either::getStream)
+              .collect(Collectors.toList());
+    }
+    return encodedResults;
+  }
+
   /**
    * Encode any Metron Errors into Spark rows
-   * @param runnerResults Parse results
+   * @param metronErrors Parse errors
    * @return List of spark rows containing encoded Metron Errors (empty list if no Metron errors present)
    */
   @NotNull
-  private List<RowWithSchema> encodeErrors(@NotNull  ParserRunnerResults<JSONObject> runnerResults) {
-    // Encode any Metron errors that are present in the parse results
+  private List<RowWithSchema> encodeErrors(@Nullable List<MetronError> metronErrors) {
     @NotNull List<RowWithSchema> encodedErrorResults = Collections.emptyList();
-    @Nullable final List<MetronError> metronErrors = runnerResults.getErrors();
-    if ((metronErrors != null) && (metronErrors.size() > 0)) {
+
+    if ((metronErrors != null) && (!metronErrors.isEmpty())) {
       // Convert MetronErrors to spark rows
       @NotNull
       final Stream<Either<ErrorInfo<Exception,MetronError>,RowWithSchema>> encodedErrors = metronErrors
               .stream()
+              .flatMap( x -> {
+                if (x == null) {
+                  LOGGER.warn("Metron Parsing produced a null error - ignoring ");
+                  return Stream.empty();
+                } else {
+                  return Stream.of(x);
+                }
+              })
               .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x)));
 
-      // log any conversion / serialisation errors
+      // report any Serialisation Exceptions
       encodedErrors.flatMap(Either::getErrorStream)
               .forEach( x -> LOGGER.error(String.format("Error serialisation Exception %s, MetronError %s",
                       x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));

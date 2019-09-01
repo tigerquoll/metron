@@ -1,4 +1,4 @@
-package org.apache.metron.envelope;
+package org.apache.metron.envelope.utils;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;

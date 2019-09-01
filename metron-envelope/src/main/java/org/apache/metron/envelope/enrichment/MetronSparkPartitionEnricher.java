@@ -19,16 +19,19 @@ import org.apache.metron.enrichment.utils.EnrichmentUtils;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.EnrichmentConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
+import org.apache.metron.envelope.utils.SparkKafkaUtils;
 import org.apache.metron.stellar.common.utils.JSONUtils;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.spark.sql.Row;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.json.simple.JSONObject;
 
-import javax.annotation.Nullable;
 import java.io.ByteArrayInputStream;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
@@ -38,19 +41,18 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
   public static class Perf {} // used for performance logging
   private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronSparkPartitionEnricher.class);
   private PerformanceLogger perfLog; // not static bc multiple bolts may exist in same worker
-  private String zookeeperQuorum;
-  private SparkRowEncodingStrategy encodingStrategy;
-  private Map<String, Object> globalConfig;
-  private EnrichmentConfigManager enrichmentConfigManager;
+  @NotNull private String zookeeperQuorum;
+  @NotNull private SparkRowEncodingStrategy encodingStrategy;
+  @NotNull private EnrichmentConfigManager enrichmentConfigManager;
 
   private Context stellarContext;
-  protected String enrichmentType;
-  protected EnrichmentAdapter<CacheKey> adapter;
-  protected transient CacheLoader<CacheKey, JSONObject> loader;
-  protected transient LoadingCache<CacheKey, JSONObject> cache;
-  protected Long maxCacheSize;
-  protected Long maxTimeRetain;
-  protected boolean invalidateCacheOnReload = false;
+  private String enrichmentType;
+  private EnrichmentAdapter<CacheKey> adapter;
+  private transient CacheLoader<CacheKey, JSONObject> loader;
+  private transient LoadingCache<CacheKey, JSONObject> cache;
+  private Long maxCacheSize;
+  private Long maxTimeRetain;
+  private boolean invalidateCacheOnReload = false;
 
   /**
    * This object gets reconstructed for every partition of data,
@@ -59,8 +61,8 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * @throws Exception if zookeeper error occurs
    */
   public MetronSparkPartitionEnricher(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) {
-    this.zookeeperQuorum = zookeeperQuorum;
-    this.encodingStrategy = rowEncodingStrategy;
+    this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
+    this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
     this.enrichmentConfigManager = new EnrichmentConfigManager(zookeeperQuorum);
   }
 
@@ -68,7 +70,6 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * Prepares the object for processing
    */
   public void init() throws Exception {
-    this.encodingStrategy.init();
     CuratorFramework curatorFramework = ZookeeperClient.getZKInstance(zookeeperQuorum);
 
     enrichmentConfigManager.init();
@@ -140,11 +141,17 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * Input rows are expected to
    * Output spark sql rows of processed data (success and errors) with schema 'outputSchema'
    */
-  @Nullable
+  @NotNull
   @Override
-  public Iterable<Row> apply(@Nullable Row row) {
+  public Iterable<Row> apply(@Nullable Row nullableRow) {
     perfLog.mark("execute");
-    String key = tuple.getStringByField("key");
+    @NotNull final Row row = Objects.requireNonNull(nullableRow);
+    @NotNull final Map<String,Object> metadata = SparkKafkaUtils.extractKafkaMetadata(row);
+    @NotNull final Map<String,Object> message = SparkKafkaUtils.extractKafkaMessage(row);
+
+
+
+    //String key = tuple.getStringByField("key");
     JSONObject rawMessage = (JSONObject) tuple.getValueByField("message");
     String subGroup = "";
 

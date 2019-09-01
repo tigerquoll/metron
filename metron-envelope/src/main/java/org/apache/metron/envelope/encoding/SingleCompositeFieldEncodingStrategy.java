@@ -1,7 +1,6 @@
 package org.apache.metron.envelope.encoding;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
-import com.cloudera.labs.envelope.utils.RowUtils;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,12 +8,15 @@ import envelope.shaded.com.google.common.collect.ImmutableList;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
+import org.apache.metron.envelope.utils.SparkKafkaUtils;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
 
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -38,7 +40,7 @@ public class SingleCompositeFieldEncodingStrategy implements SparkRowEncodingStr
     outputSchema = DataTypes.createStructType(new StructField[]{
             versionFieldSchema,
             errorIndFieldSchema,
-            DataTypes.createStructField(DATAVALUE, datafieldType.getSparkFieldType(), false),
+            DataTypes.createStructField(DATA_FIELD, datafieldType.getSparkFieldType(), false),
     });
     mapper = new ObjectMapper(encodingFactory);
   }
@@ -63,5 +65,11 @@ public class SingleCompositeFieldEncodingStrategy implements SparkRowEncodingStr
   @Override
   public RowWithSchema encodeParserResultIntoSparkRow(JSONObject parsedMessage) throws JsonProcessingException {
     return encodeCompositeField(parsedMessage, ERROR_INDICATOR_TRUE);
+  }
+
+  @Override
+  public JSONObject decodeParsedMessage(@NotNull Row row) {
+    @NotNull final Map<String,Object> kafkaMessage = SparkKafkaUtils.extractKafkaMessage(Objects.requireNonNull(row));
+    datafieldType.getSparkFieldType() == data
   }
 }

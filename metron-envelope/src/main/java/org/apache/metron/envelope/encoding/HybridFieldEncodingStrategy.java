@@ -5,7 +5,6 @@ import com.cloudera.labs.envelope.utils.RowUtils;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.Sets;
 import envelope.shaded.com.google.common.collect.ImmutableList;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.utils.LazyLogger;
@@ -20,7 +19,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -72,7 +70,7 @@ public class HybridFieldEncodingStrategy implements SparkRowEncodingStrategy {
     mapper = new ObjectMapper(encodingFactory);
 
     // Create the output schema based on the passed in parameters
-    @NotNull final StructField dataFieldSchema = DataTypes.createStructField(DATAVALUE,
+    @NotNull final StructField dataFieldSchema = DataTypes.createStructField(DATA_FIELD,
             datafieldType.getSparkFieldType(),
             false);
 

@@ -1,4 +1,4 @@
-package org.apache.metron.envelope;
+package org.apache.metron.envelope.utils;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -47,6 +47,28 @@ public class ErrorUtils {
     @NotNull
     public String getCauseStringOr(String message) {
       return cause == null ? message : cause.toString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) return true;
+      if (o == null || getClass() != o.getClass()) return false;
+      ErrorInfo<?, ?> errorInfo = (ErrorInfo<?, ?>) o;
+      return Objects.equals(getException(), errorInfo.getException()) &&
+              Objects.equals(getCause(), errorInfo.getCause());
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(getException(), getCause());
+    }
+
+    @Override
+    public String toString() {
+      return "ErrorInfo{" +
+              "exception=" + exception +
+              ", cause=" + cause +
+              '}';
     }
   }
 
