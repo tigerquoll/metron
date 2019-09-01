@@ -12,7 +12,10 @@ import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
+
+import java.util.Objects;
 
 /**
  * Encapsulate various logic on how Metron encodes values in Spark Dataframes
@@ -21,7 +24,7 @@ import org.json.simple.JSONObject;
  */
 public class SingleCompositeFieldEncodingStrategy implements SparkRowEncodingStrategy {
   private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(SingleCompositeFieldEncodingStrategy.class);
-  private transient ObjectMapper mapper = null;
+  private transient ObjectMapper mapper;
   private DataFieldType datafieldType;
 
   /**
@@ -30,8 +33,8 @@ public class SingleCompositeFieldEncodingStrategy implements SparkRowEncodingStr
   private StructType outputSchema = null;
 
   @Override
-  public void init(JsonFactory encodingFactory, DataFieldType datafieldType) {
-    this.datafieldType = datafieldType;
+  public void init(@NotNull JsonFactory encodingFactory, @NotNull DataFieldType datafieldType) {
+    this.datafieldType = Objects.requireNonNull(datafieldType);
     outputSchema = DataTypes.createStructType(new StructField[]{
             versionFieldSchema,
             errorIndFieldSchema,
@@ -48,7 +51,7 @@ public class SingleCompositeFieldEncodingStrategy implements SparkRowEncodingStr
   private RowWithSchema encodeCompositeField(JSONObject data, Object errorIndicator) throws JsonProcessingException {
     // check for reserved name usage
     EncodingUtils.warnIfReservedFieldsAreUsed(data, LOGGER);
-    final Object compositeFieldValue = EncodingUtils.encodeJsonFields(mapper,datafieldType, data);
+    final Object compositeFieldValue = Objects.requireNonNull(EncodingUtils.encodeJsonFields(mapper,datafieldType, data));
     return new RowWithSchema(outputSchema, ImmutableList.of(VERSION_ONE, errorIndicator, compositeFieldValue));
   }
 

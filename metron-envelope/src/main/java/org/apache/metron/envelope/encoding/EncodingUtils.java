@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 
 public final class EncodingUtils {
 
-  private EncodingUtils() {};
+  private EncodingUtils() {}
 
   /**
    * Encodes all fields in the JSONObject into a HashMap and encodes as per the passed serialisation settings

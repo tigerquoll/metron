@@ -58,7 +58,7 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * @param zookeeperQuorum Zookeeper address of configuration
    * @throws Exception if zookeeper error occurs
    */
-  public MetronSparkPartitionEnricher(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) throws Exception {
+  public MetronSparkPartitionEnricher(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = zookeeperQuorum;
     this.encodingStrategy = rowEncodingStrategy;
     this.enrichmentConfigManager = new EnrichmentConfigManager(zookeeperQuorum);

@@ -13,11 +13,13 @@ import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -64,20 +66,21 @@ public class HybridFieldEncodingStrategy implements SparkRowEncodingStrategy {
   }
 
   @Override
-  public void init(JsonFactory encodingFactory, DataFieldType datafieldType) {
-    this.datafieldType = datafieldType;
+  public void init(@NotNull JsonFactory encodingFactory, @NotNull DataFieldType datafieldType) {
+    this.datafieldType = Objects.requireNonNull(datafieldType);
     // init serialisation
     mapper = new ObjectMapper(encodingFactory);
 
     // Create the output schema based on the passed in parameters
-    final StructField dataFieldSchema = DataTypes.createStructField(DATAVALUE,
+    @NotNull final StructField dataFieldSchema = DataTypes.createStructField(DATAVALUE,
             datafieldType.getSparkFieldType(),
             false);
 
-    final List<StructField> parserOutputFields = new ImmutableList.Builder<StructField>()
+    @NotNull final List<StructField> parserOutputFields = new ImmutableList.Builder<StructField>()
             .addAll(parserOutputSchemaTemplate)
             .add(dataFieldSchema)
             .build();
+
     parserOutputSchema = DataTypes.createStructType(parserOutputFields);
 
     // Generate an index of standard, non reserved schema fields for ease of processing
@@ -93,8 +96,9 @@ public class HybridFieldEncodingStrategy implements SparkRowEncodingStrategy {
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
   @Override
-  public RowWithSchema encodeParserErrorIntoSparkRow(MetronError metronError) throws JsonProcessingException {
-    final List<Object> encodedRowValues = new ArrayList<>();
+  @NotNull
+  public RowWithSchema encodeParserErrorIntoSparkRow(@NotNull MetronError metronError) throws JsonProcessingException {
+    @NotNull final List<Object> encodedRowValues = new ArrayList<>();
     encodedRowValues.add(VERSION_ONE);
     encodedRowValues.add(ERROR_INDICATOR_FALSE);
     for(Map.Entry<String, StructField> schemaEntry: schemaIndex.entrySet()) {
@@ -116,7 +120,8 @@ public class HybridFieldEncodingStrategy implements SparkRowEncodingStrategy {
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
   @Override
-  public RowWithSchema encodeParserResultIntoSparkRow(JSONObject parsedMessage) throws JsonProcessingException {
+  @NotNull
+  public RowWithSchema encodeParserResultIntoSparkRow(@NotNull JSONObject parsedMessage) throws JsonProcessingException {
     // check for reserved name usage
     EncodingUtils.warnIfReservedFieldsAreUsed(parsedMessage, LOGGER);
 

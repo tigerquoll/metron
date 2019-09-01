@@ -23,27 +23,21 @@ import com.cloudera.labs.envelope.derive.Deriver;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
-import org.apache.metron.common.Constants;
-import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.metron.envelope.encoding.HybridFieldEncodingStrategy;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
-import org.apache.metron.storm.common.bolt.ConfiguredEnrichmentBolt;
-import org.apache.metron.storm.common.utils.StormErrorUtils;
+
 import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.encoders.RowEncoder;
-import org.apache.storm.task.OutputCollector;
-import org.apache.storm.task.TopologyContext;
-import org.apache.storm.topology.OutputFieldsDeclarer;
-import org.apache.storm.tuple.Fields;
-import org.apache.storm.tuple.Tuple;
-import org.apache.storm.tuple.Values;
-import org.json.simple.JSONObject;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import parquet.Preconditions;
 
+import javax.validation.constraints.Null;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
@@ -67,11 +61,11 @@ import java.util.Objects;
 
 @SuppressWarnings({"rawtypes", "serial"})
 public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
-  private static final String ALIAS = "MetronEnricher";
-  private static final String ZOOKEEPER = "zookeeper";
-  private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
-  private String zookeeperQuorum = null;
-  private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
+  @NotNull private static final String ALIAS = "MetronEnricher";
+  @NotNull private static final String ZOOKEEPER = "zookeeper";
+  @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
+  @Null private String zookeeperQuorum = null;
+  @NotNull private SparkRowEncodingStrategy encodingStrategy = new HybridFieldEncodingStrategy();
 
   @Override
   // envelope configuration
@@ -85,7 +79,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
   }
 
   @Override
-  public Dataset<Row> derive(Map<String, Dataset<Row>> srcDataset) throws Exception {
+  public Dataset<Row> derive(@NotNull Map<String, Dataset<Row>> srcDataset) {
     Preconditions.checkArgument(srcDataset.size() == 1, getAlias() + " should only have one dependant dataset");
     final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
@@ -110,8 +104,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
     return dst;
   }
 
-
-
+/*
   // Made protected to allow for error testing in integration test. Directly flaws inputs while everything is functioning hits other
   // errors, so this is made available in order to ensure ERROR_STREAM is output properly.
   protected void handleError(String key, JSONObject rawMessage, String subGroup, JSONObject enrichedMessage, Exception e) {
@@ -125,6 +118,6 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
             .addRawMessage(rawMessage);
     StormErrorUtils.handleError(collector, error);
   }
-
+ */
 
 }

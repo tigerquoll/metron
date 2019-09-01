@@ -17,10 +17,12 @@
  */
 package org.apache.metron.envelope.parsing;
 
+import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.translate.Translator;
+import com.fasterxml.jackson.core.JsonFactory;
 import com.github.benmanes.caffeine.cache.Cache;
-import com.google.common.collect.Iterables;
 import envelope.shaded.com.google.common.collect.ImmutableMap;
+import envelope.shaded.com.google.common.collect.Iterables;
 import org.apache.metron.common.configuration.SensorParserConfig;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.message.metadata.MetadataUtil;
@@ -28,6 +30,8 @@ import org.apache.metron.common.message.metadata.RawMessage;
 import org.apache.metron.common.message.metadata.RawMessageStrategy;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
+import org.apache.metron.envelope.Either;
+import org.apache.metron.envelope.ErrorUtils.ErrorInfo;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.ParserConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
@@ -38,9 +42,10 @@ import org.apache.metron.stellar.common.CachingStellarProcessor;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.spark.sql.Row;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.json.simple.JSONObject;
 
-import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -50,25 +55,29 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static org.apache.metron.envelope.ErrorUtils.catchErrorsAndNullsWithCause;
 
 /**
  * Responsible for Initialising and running metron parsers over a a spark partition's worth of incoming data from Kafka.
  * This class assumes that data is incoming via Kafka, c.f. extractMetadata() for the implementation of that assumption
  */
 public class MetronSparkPartitionParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>> {
-  private static final String KAFKA_TOPICNAME_FIELD = "topic";
-  private static final String KAFKA_TIMESTAMP_FIELD = "timestamp";
-  private static final String KAFKA_PARTITION_FIELD = "partition";
-  private static final String KAFKA_OFFSET_FIELD = "offset";
-  private static final String ENVELOPE_KAFKA_TOPICNAME_FIELD = KAFKA_TOPICNAME_FIELD;
-  private static final String ENVELOPE_KAFKA_TIMESTAMP_FIELD = KAFKA_TIMESTAMP_FIELD;
-  private static final String ENVELOPE_KAFKA_PARTITION_FIELD = KAFKA_PARTITION_FIELD;
-  private static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
-  private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
+  @NotNull private static final String KAFKA_TOPICNAME_FIELD = "topic";
+  @NotNull private static final String KAFKA_TIMESTAMP_FIELD = "timestamp";
+  @NotNull private static final String KAFKA_PARTITION_FIELD = "partition";
+  @NotNull private static final String KAFKA_OFFSET_FIELD = "offset";
+  @NotNull private static final String ENVELOPE_KAFKA_TOPICNAME_FIELD = KAFKA_TOPICNAME_FIELD;
+  @NotNull private static final String ENVELOPE_KAFKA_TIMESTAMP_FIELD = KAFKA_TIMESTAMP_FIELD;
+  @NotNull private static final String ENVELOPE_KAFKA_PARTITION_FIELD = KAFKA_PARTITION_FIELD;
+  @NotNull private static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
+  @NotNull public static final String UNKNOWN = "Unknown";
+  @NotNull private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
 
-  private ParserConfigManager parserConfigManager;
-  private String zookeeperQuorum;
-  private SparkRowEncodingStrategy encodingStrategy;
+  @NotNull private ParserConfigManager parserConfigManager;
+  @NotNull private String zookeeperQuorum;
+  @NotNull private SparkRowEncodingStrategy encodingStrategy;
   private ParserRunner<JSONObject> envelopeParserRunner;
   private Map<String, String> topicToSensorMap;
 
@@ -77,9 +86,9 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    */
-  MetronSparkPartitionParser(String zookeeperQuorum, SparkRowEncodingStrategy rowEncodingStrategy) {
-    this.zookeeperQuorum = zookeeperQuorum;
-    this.encodingStrategy = rowEncodingStrategy;
+  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
+    this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
+    this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
     this.parserConfigManager = new ParserConfigManager(zookeeperQuorum);
   }
 
@@ -88,7 +97,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param row Row of data extracted from Kafka
    * @return extracted metadata
    */
-  private Map<String, Object> extractKafkaMetadata(org.apache.spark.sql.Row row) {
+  @NotNull
+  private Map<String, Object> extractKafkaMetadata(@NotNull Row row) {
     return ImmutableMap.of(
             ENVELOPE_KAFKA_TIMESTAMP_FIELD, row.getAs(KAFKA_TIMESTAMP_FIELD),
             ENVELOPE_KAFKA_TOPICNAME_FIELD, row.getAs(KAFKA_TOPICNAME_FIELD),
@@ -101,8 +111,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @throws Exception on error
    */
   public void init() throws Exception {
-    this.encodingStrategy.init();
-    final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
+    this.encodingStrategy.init(new JsonFactory(), SparkRowEncodingStrategy.DataFieldType.FieldType_String);
+    @NotNull final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
     topicToSensorMap = createTopicToSensorMap(sensorTypes);
     envelopeParserRunner = new ParserRunnerImpl(new HashSet<>(sensorTypes));
     envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), initializeStellar(sensorTypes));
@@ -115,10 +125,11 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param sensorTypes  All of the sensor types
    * @return Map of sensor data to configured processing settings
    */
-  private Map<String, String> createTopicToSensorMap(final Collection<String> sensorTypes) {
-    final Map<String, String> retval = new HashMap<>();
+  @NotNull
+  private Map<String, String> createTopicToSensorMap(@NotNull final Collection<String> sensorTypes) {
+    @NotNull final Map<String, String> retval = new HashMap<>();
     for (String sensorType : sensorTypes) {
-      final SensorParserConfig parserDriveConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
+      @Nullable final SensorParserConfig parserDriveConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
       if (parserDriveConfig != null) {
         parserDriveConfig.init();
         retval.put(parserDriveConfig.getSensorTopic(), sensorType);
@@ -135,51 +146,93 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param row Row of spark input data that Metron needs to process (as spark kafka input schema)
    * @return Metron parser results
    */
-  private ParserRunnerResults<JSONObject> getResults(Row row) {
+  private ParserRunnerResults<JSONObject> getResults(@NotNull Row row) {
     // Get original message and extract metadata (such as source topic which we can get source) from it
-    final byte[] originalMessage = row.getAs(Translator.VALUE_FIELD_NAME);
-    Map<String, Object> metadata = extractKafkaMetadata(row);
+    @NotNull final byte[] originalMessage = Objects.requireNonNull(row.getAs(Translator.VALUE_FIELD_NAME));
+    @NotNull Map<String, Object> metadata = extractKafkaMetadata(row);
+    @NotNull final String kafkaTopic = Objects.requireNonNull(metadata.get(ENVELOPE_KAFKA_TOPICNAME_FIELD)).toString();
 
     // Use kafka metadata to backtrack to the providing sensor so sensor-level configurations can be retrieved and actioned
-    final String sensorType = topicToSensorMap.get(metadata.get(ENVELOPE_KAFKA_TOPICNAME_FIELD).toString());
-    final SensorParserConfig parserDriverConfig = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
+    @NotNull final String sensorType = Objects.requireNonNull(topicToSensorMap.get(kafkaTopic));
+
+    @NotNull final SensorParserConfig parserDriverConfig = Objects.requireNonNull(
+            parserConfigManager.getConfigurations().getSensorParserConfig(sensorType));
+
     metadata = AddMetadataPrefixIfConfigured(metadata, parserDriverConfig);
 
     // Pre-process the raw message as configured by the parser driver configuration
-    final RawMessage rawMessage = getRawMessage(originalMessage, metadata, parserDriverConfig);
+    @NotNull final RawMessage rawMessage = Objects.requireNonNull(getRawMessage(originalMessage, metadata, parserDriverConfig));
 
     // return the results of running the configured metron parsers over the row
     return envelopeParserRunner.execute(sensorType, rawMessage, parserConfigManager.getConfigurations());
   }
 
+
   /**
    * Run the configured list of Metron Parsers across the passed Row
    * If any errors are present, pass them back encoded into the return row values
-   * Input rows are expected to
-   * Output spark sql rows of processed data (success and errors) with schema 'outputSchema'
+   * @param nullableRow Input rows to parse
+   * @return  Output spark sql rows of processed data (success and errors) with schema 'outputSchema'
    */
-  @Nullable
+  @NotNull
   @Override
-  public Iterable<Row> apply(Row row) {
-    final ParserRunnerResults<JSONObject> runnerResults = getResults(row);
+  public Iterable<Row> apply(@Nullable Row nullableRow) {
+    if (nullableRow == null) {
+      return Collections.emptyList();
+    }
+    @NotNull Row row = nullableRow;
 
-    final List<Row> encodedResults = runnerResults.getMessages().stream()
-            .map(x -> encodingStrategy.encodeParserResultIntoSparkRow(x))
-            .filter(Objects::nonNull)
+    // Run Configured Metron parsers across the input data
+    @NotNull final ParserRunnerResults<JSONObject> runnerResults = getResults(row);
+
+    // Encode Metron Parser Results into Spark Rows
+    @NotNull final Stream<Either<ErrorInfo<Exception,JSONObject>,RowWithSchema>> encodedMessages = runnerResults.getMessages()
+            .stream()
+            .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserResultIntoSparkRow(x)));
+
+    // report in Serialisation Exceptions
+    encodedMessages.flatMap(Either::getErrorStream)
+            .forEach( x -> LOGGER.error(String.format("Error serialisation Exception %s, JSONMessage %s",
+                    x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
+
+    // collect results
+    @NotNull final List<RowWithSchema> encodedResults = encodedMessages
+            .flatMap(Either::getStream)
             .collect(Collectors.toList());
 
-    List<Row> encodedErrors = Collections.emptyList();
-    final List<MetronError> metronErrors = runnerResults.getErrors();
+    // now do the same for Metron Errors
+    @NotNull final List<RowWithSchema> encodedErrorResults = encodeErrors(runnerResults);
+
+    return Iterables.concat(encodedResults, encodedErrorResults);
+
+  }
+
+  /**
+   * Encode any Metron Errors into Spark rows
+   * @param runnerResults Parse results
+   * @return List of spark rows containing encoded Metron Errors (empty list if no Metron errors present)
+   */
+  @NotNull
+  private List<RowWithSchema> encodeErrors(@NotNull  ParserRunnerResults<JSONObject> runnerResults) {
+    // Encode any Metron errors that are present in the parse results
+    @NotNull List<RowWithSchema> encodedErrorResults = Collections.emptyList();
+    @Nullable final List<MetronError> metronErrors = runnerResults.getErrors();
     if ((metronErrors != null) && (metronErrors.size() > 0)) {
-      // should we  direct errors into a separate kafka queue?
-      // yes
-      encodedErrors = metronErrors.stream()
-              .map(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x))
-              .filter(Objects::nonNull)
+      // Convert MetronErrors to spark rows
+      @NotNull
+      final Stream<Either<ErrorInfo<Exception,MetronError>,RowWithSchema>> encodedErrors = metronErrors
+              .stream()
+              .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x)));
+
+      // log any conversion / serialisation errors
+      encodedErrors.flatMap(Either::getErrorStream)
+              .forEach( x -> LOGGER.error(String.format("Error serialisation Exception %s, MetronError %s",
+                      x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
+
+      encodedErrorResults = encodedErrors.flatMap(Either::getStream)
               .collect(Collectors.toList());
     }
-
-    return Iterables.concat(encodedResults, encodedErrors);
+    return encodedErrorResults;
   }
 
   /**
@@ -187,7 +240,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param sensorTypes The different sensor types stellar may encounter
    * @return Stellar Context
    */
-  private Context initializeStellar(final List<String> sensorTypes) {
+  @NotNull
+  private Context initializeStellar(@NotNull final List<String> sensorTypes) {
     Map<String, Object> cacheConfig = new HashMap<>();
     for (String sensorType : sensorTypes) {
       SensorParserConfig config = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
@@ -216,12 +270,14 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param parserDriverConfig Configuration on how to treat the message
    * @return The pre-processed message ready for parsing.
    */
-  private RawMessage getRawMessage(byte[] originalMessage, Map<String, Object> metadata, SensorParserConfig parserDriverConfig) {
-    final RawMessageStrategy rawMessageStrategy = parserDriverConfig.getRawMessageStrategy();
-    return rawMessageStrategy.get(metadata,
+  @NotNull
+  private RawMessage getRawMessage(@NotNull byte[] originalMessage, @NotNull Map<String, Object> metadata, @NotNull SensorParserConfig parserDriverConfig) {
+    @NotNull final RawMessageStrategy rawMessageStrategy = Objects.requireNonNull(parserDriverConfig.getRawMessageStrategy());
+
+    return Objects.requireNonNull(rawMessageStrategy.get(metadata,
             originalMessage,
             parserDriverConfig.getReadMetadata(),
-            parserDriverConfig.getRawMessageStrategyConfig());
+            parserDriverConfig.getRawMessageStrategyConfig()));
   }
 
   /**
@@ -230,8 +286,9 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @param parserDriverConfig  Sensor configuration
    * @return Metadata map updated with prefixes if configured, else original metadata map
    */
-  private Map<String, Object> AddMetadataPrefixIfConfigured(Map<String, Object> metadata, SensorParserConfig parserDriverConfig) {
-    final String metadataPrefix = MetadataUtil.INSTANCE.getMetadataPrefix(parserDriverConfig.getRawMessageStrategyConfig());
+  @NotNull
+  private Map<String, Object> AddMetadataPrefixIfConfigured(@NotNull Map<String, Object> metadata, @NotNull SensorParserConfig parserDriverConfig) {
+    @Nullable final String metadataPrefix = MetadataUtil.INSTANCE.getMetadataPrefix(parserDriverConfig.getRawMessageStrategyConfig());
     if ((metadataPrefix != null) && (metadataPrefix.length() > 0)) {
       // prefix all metadata keys with configured prefix
       metadata = metadata.entrySet().stream()

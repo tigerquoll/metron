@@ -34,9 +34,12 @@ import org.apache.metron.common.zookeeper.configurations.ConfigurationsUpdater;
 import org.apache.metron.common.zookeeper.configurations.Reloadable;
 import org.apache.metron.zookeeper.SimpleEventListener;
 import org.apache.metron.zookeeper.ZKCache;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 
 import java.lang.invoke.MethodHandles;
+import java.util.Objects;
 
 
 /**
@@ -50,12 +53,12 @@ import java.lang.invoke.MethodHandles;
 public abstract class ConfigManager<CONFIG_T extends Configurations> implements AutoCloseable, Reloadable {
   private static final LazyLogger LOG =  LazyLoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-  private String zookeeperUrl;
-  private String configurationStrategy;
+  @NotNull private final String zookeeperUrl;
+  @NotNull private final String configurationStrategy;
 
   protected CuratorFramework client;
   protected ZKCache cache;
-  private final CONFIG_T configurations;
+  @NotNull private final CONFIG_T configurations;
 
   /**
    * Builds the bolt that knows where to communicate with ZooKeeper and which configuration this
@@ -64,15 +67,17 @@ public abstract class ConfigManager<CONFIG_T extends Configurations> implements 
    * @param zookeeperUrl A URL for ZooKeeper in the form host:port
    */
   public ConfigManager(String zookeeperUrl, String configurationStrategy) {
-    this.zookeeperUrl = zookeeperUrl;
-    this.configurationStrategy = configurationStrategy;
-    this.configurations = createUpdater().defaultConfigurations();
+    this.zookeeperUrl = Objects.requireNonNull(zookeeperUrl);
+    this.configurationStrategy = Objects.requireNonNull(configurationStrategy);
+    this.configurations = Objects.requireNonNull(createUpdater().defaultConfigurations());
   }
 
+  @NotNull
   protected ConfigurationStrategy<CONFIG_T> getConfigurationStrategy() {
     return ConfigurationsStrategies.valueOf(configurationStrategy);
   }
 
+  @Nullable
   protected ConfigurationsUpdater<CONFIG_T> createUpdater() {
     return getConfigurationStrategy().createUpdater(this, this::getConfigurations);
   }
@@ -85,6 +90,7 @@ public abstract class ConfigManager<CONFIG_T extends Configurations> implements 
     this.cache = cache;
   }
 
+  @NotNull
   public CONFIG_T getConfigurations() {
     return configurations;
   }
@@ -140,6 +146,6 @@ public abstract class ConfigManager<CONFIG_T extends Configurations> implements 
 
   @Override
   public void reloadCallback(String name, ConfigurationType type) {
-    LOG.info("Config update detected for %s of type %s - updated configuration will apply at next micro-batch", name, type);
+    LOG.info(String.format("Config update detected for %s of type %s - updated configuration will apply at next micro-batch", name, type));
   }
 }

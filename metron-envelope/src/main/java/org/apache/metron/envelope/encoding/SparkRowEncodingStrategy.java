@@ -11,6 +11,7 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
 
 import java.io.Serializable;
@@ -62,7 +63,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
   /**
    * Initialise any serialization libraries
    */
-  void init(JsonFactory encodingFactory, DataFieldType datafieldType);
+  void init(@NotNull JsonFactory encodingFactory, @NotNull DataFieldType datafieldType);
 
   /**
    * Spark schema of the data after it has been parsed by Metron
@@ -77,7 +78,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    * @param metronError The error to encode
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
-  RowWithSchema encodeParserErrorIntoSparkRow(MetronError metronError) throws JsonProcessingException;
+  RowWithSchema encodeParserErrorIntoSparkRow(@NotNull MetronError metronError) throws JsonProcessingException;
 
   /**
    * Encode a metron parse result into a Spark row
@@ -85,7 +86,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    * @param parsedMessage The parsed message
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
-  RowWithSchema encodeParserResultIntoSparkRow(JSONObject parsedMessage) throws JsonProcessingException;
+  RowWithSchema encodeParserResultIntoSparkRow(@NotNull JSONObject parsedMessage) throws JsonProcessingException;
 
 
 }
