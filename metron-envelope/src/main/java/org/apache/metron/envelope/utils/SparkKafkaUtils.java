@@ -97,4 +97,19 @@ public final class SparkKafkaUtils {
               '}';
     }
   }
+
+  /*
+  Fields to be written out include:
+    public enum Fields implements Field {
+     SRC_ADDR("ip_src_addr")
+    ,SRC_PORT("ip_src_port")
+    ,DST_ADDR("ip_dst_addr")
+    ,DST_PORT("ip_dst_port")
+    ,PROTOCOL("protocol")
+    ,TIMESTAMP("timestamp")
+    ,ORIGINAL("original_string")
+    ,GUID("guid")
+    ,SENSOR_TYPE("source.type")
+    ,INCLUDES_REVERSE_TRAFFIC("includes_reverse_traffic")
+   */
 }

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import envelope.shaded.com.google.common.collect.ImmutableList;
+import org.apache.metron.common.Constants;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
@@ -39,14 +40,16 @@ public class HybridFieldEncodingStrategy implements SparkRowEncodingStrategy {
   private static List<StructField> parserOutputSchemaTemplate = new ImmutableList.Builder<StructField>()
           .add(versionFieldSchema)
           .add(errorIndFieldSchema)
-          .add(DataTypes.createStructField("ip_src_addr", DataTypes.StringType, true))
-          .add(DataTypes.createStructField("ip_dst_addr",  DataTypes.StringType, true))
-          .add(DataTypes.createStructField("ip_src_port",  DataTypes.IntegerType, true))
-          .add(DataTypes.createStructField("ip_dst_port",  DataTypes.IntegerType, true))
-          .add(DataTypes.createStructField("ip_dst_port",  DataTypes.IntegerType, true))
-          .add(DataTypes.createStructField("protocol",  DataTypes.StringType, true))
-          .add(DataTypes.createStructField("timestamp",  DataTypes.LongType, true))
-          .add(DataTypes.createStructField("original_string",  DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.GUID.getName(), DataTypes.StringType, true)) // Also kafka key
+          .add(DataTypes.createStructField(Constants.Fields.SENSOR_TYPE.getName(), DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.SRC_ADDR.getName(), DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.DST_ADDR.getName(),  DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.SRC_PORT.getName(),  DataTypes.IntegerType, true))
+          .add(DataTypes.createStructField(Constants.Fields.DST_PORT.getName(), DataTypes.IntegerType, true))
+          .add(DataTypes.createStructField(Constants.Fields.PROTOCOL.getName(),  DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.TIMESTAMP.getName(),  DataTypes.LongType, true))
+          .add(DataTypes.createStructField(Constants.Fields.ORIGINAL.getName(),  DataTypes.StringType, true))
+          .add(DataTypes.createStructField(Constants.Fields.INCLUDES_REVERSE_TRAFFIC.getName(), DataTypes.BooleanType, true)) // Used in pcap encoders
           // a dataval field type will be added here during initialisation
           .build();
 

@@ -13,15 +13,15 @@ import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.json.simple.JSONObject;
 
 import java.io.Serializable;
 import java.util.Set;
 
 /**
- * Interface that encapsulates the way we encode metron data into spark SQL dataframes.
- * Support for dynamically changing schemas is via parameterised Jackson Serialisation
- * eg. Straight JSON, CBOR (standardised binary Json), Avro with schema registry etc.
+ * Interface that encapsulates the way we encode metron data into spark SQL dataframes,
+ * and how those dataframes are sent / received over Kafka
  */
 public interface SparkRowEncodingStrategy extends Serializable {
   /**
@@ -63,7 +63,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
   /**
    * Initialise any serialization libraries
    */
-  void init(@NotNull JsonFactory encodingFactory, @NotNull DataFieldType datafieldType);
+  void init(@Nullable String additionalConfig)
 
   /**
    * Spark schema of the data after it has been parsed by Metron

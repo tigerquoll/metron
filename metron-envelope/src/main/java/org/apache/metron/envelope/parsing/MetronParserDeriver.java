@@ -48,12 +48,10 @@ import static org.apache.metron.envelope.utils.ClassUtils.instantiateClass;
 public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "MetronParser";
   private static final String ZOOKEEPER = "ZookeeperQuorum";
-  private static final String SERIALISATION_PROVIDER = "SerialisationProvider";
   private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
-  private static final String SPARK_ROW_ENCODING_COMPOSITE_TYPE = "SparkRowEncodingCompositeFieldType";
+  private static final String SPARK_ROW_ENCODING_CONFIG = "SparkRowEncodingStrategyConfig";
 
   private String zookeeperQuorum = null;
-  private JsonFactory jsonFactory = null;
   private SparkRowEncodingStrategy encodingStrategy = null;
 
   @Override
@@ -66,15 +64,11 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
 
-    final String serialisationFactoryName = Objects.requireNonNull(config.getString(SERIALISATION_PROVIDER));
-    jsonFactory = (JsonFactory) instantiateClass(serialisationFactoryName);
-
-    final String compositeFieldTypename = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING_COMPOSITE_TYPE));
-    final SparkRowEncodingStrategy.DataFieldType compositeRowType = SparkRowEncodingStrategy.DataFieldType.valueOf(compositeFieldTypename);
-
     final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
-    encodingStrategy.init(jsonFactory,compositeRowType);
+
+    @Nullable final String rowEncodingConfig = config.getString(SPARK_ROW_ENCODING_CONFIG);
+    encodingStrategy.init(rowEncodingConfig);
   }
 
 

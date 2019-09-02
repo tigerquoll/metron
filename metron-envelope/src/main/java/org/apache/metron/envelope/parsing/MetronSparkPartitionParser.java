@@ -72,7 +72,8 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
   @NotNull private ParserConfigManager parserConfigManager;
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
-  @NotNull private JsonFactory jsonFactory;
+
+
   private ParserRunner<JSONObject> envelopeParserRunner;
   private Map<String, String> topicToSensorMap;
 
@@ -81,11 +82,9 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    */
-  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy,
-                             @NotNull JsonFactory jsonFactory) {
+  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
     this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
-    this.jsonFactory = Objects.requireNonNull(jsonFactory);
     this.parserConfigManager = new ParserConfigManager(zookeeperQuorum);
   }
 
