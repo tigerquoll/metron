@@ -103,7 +103,7 @@ public class ErrorUtils {
 
   /**
    * Transforms a ThrowingFunction into a normal Function that returns an Either<Exception,Result>
-   *   Returned nulls will be treated as a Null Pointer Exceptino and wrapped in an Error
+   *   Returned nulls will be treated as a Null Pointer Exception and wrapped in an Error
    *   The transformed function will no longer throw exceptions
    * @param function Throwing function to wrap
    * @param <T> Input Type of function
@@ -145,8 +145,7 @@ public class ErrorUtils {
   /**
    * Transforms a ThrowingFunction into a normal Function that returns an Either<ErrorInfo<Exception,SourceData>,Result>
    *   This allows the a full copy of the data that caused the exception to be bundled up with the exception itself,
-   *   to allow for easier debugging
-   *   The transformed function will no longer throw exceptions.
+   *   to allow for easier debugging. The transformed function will no longer throw exceptions.
    *   Null values will cause a NullPointerException which will be wrapped in an Error
    * @param function Throwing function to wrap
    * @param <T> Input Type of function

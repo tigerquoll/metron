@@ -1,10 +1,16 @@
 package org.apache.metron.envelope.utils;
 
+import com.cloudera.labs.envelope.shaded.org.apache.avro.Schema;
+import com.cloudera.labs.envelope.shaded.org.apache.avro.SchemaBuilder;
 import envelope.shaded.com.google.common.collect.ImmutableMap;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -22,6 +28,7 @@ public final class SparkKafkaUtils {
   @NotNull public static final String ENVELOPE_KAFKA_OFFSET_FIELD = KAFKA_OFFSET_FIELD;
   @NotNull public static final String ENVELOPE_KAFKA_KEY_FIELD = KAFKA_KEY_FIELD;
   @NotNull public static final String ENVELOPE_KAFKA_VALUE_FIELD = KAFKA_VALUE_FIELD;
+  public static final String ORG_APACHE_METRON_AVRO = "org.apache.metron.avro";
 
   private SparkKafkaUtils() {}
   /**
@@ -45,7 +52,30 @@ public final class SparkKafkaUtils {
     );
   }
 
-  
+  public static Schema generateAvroSchema(final StructField [] sparkSchema, final String schemaName) {
+    SchemaBuilder.FieldAssembler<Schema> partialSchema = SchemaBuilder
+            .record(schemaName)
+            .namespace(ORG_APACHE_METRON_AVRO)
+            .fields();
+    for (StructField x : sparkSchema) {
+      final SchemaBuilder.BaseFieldTypeBuilder<Schema> partialFieldDef = partialSchema.name(x.name()).type().nullable();
+      final DataType dataType = x.dataType();
+
+      // Scala enums can be used as the basis of a Java switch statement unfortunately
+      if (DataTypes.StringType.equals(dataType)) {
+        partialSchema = partialFieldDef.stringType().noDefault();
+      } else if (DataTypes.IntegerType.equals(dataType)) {
+        partialSchema = partialFieldDef.intType().noDefault();
+      } else if (DataTypes.LongType.equals(dataType)) {
+        partialSchema = partialFieldDef.longType().noDefault();
+      } else if (DataTypes.BinaryType.equals(dataType)) {
+        partialSchema = partialFieldDef.bytesType().noDefault();
+      } else {
+        throw new UnsupportedOperationException(String.format("Do not know how to convert spark sql type %s into Avro", x.toString()));
+      }
+    }
+    return partialSchema.endRecord();
+  }
   /**
    * Specialised Pair class to contain retrieved Kafka Messages
    * @param <K> Type of the Key field

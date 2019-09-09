@@ -171,6 +171,10 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     // encode Errors into Spark Rows
     @NotNull final List<RowWithSchema> encodedErrorResults = encodeErrors(runnerResults.getErrors());
 
+    if (!encodedErrorResults.isEmpty()) {
+      // send Errors to error topic
+    }
+
     return Iterables.concat(encodedResults, encodedErrorResults);
 
   }

@@ -17,78 +17,206 @@
  */
 package org.apache.metron.envelope;
 
+import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.configuration.ConfigLoader;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
-import com.typesafe.config.ConfigParseOptions;
-import org.apache.curator.framework.CuratorFramework;
-import org.apache.curator.framework.api.CuratorWatcher;
-import org.apache.kudu.shaded.com.google.common.base.MoreObjects;
-import org.apache.zookeeper.Watcher;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import envelope.shaded.com.google.common.base.Charsets;
+import envelope.shaded.com.google.common.base.Preconditions;
+import envelope.shaded.com.google.common.collect.ImmutableSet;
+import org.apache.metron.common.configuration.SensorParserConfig;
+import org.apache.metron.common.utils.LazyLogger;
+import org.apache.metron.common.utils.LazyLoggerFactory;
+import org.apache.metron.envelope.config.ParserConfigManager;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-public class MetronConfigLoader implements ConfigLoader {
-  private static final String DEFAULT_ENVELOPE_CONFIG_PATH = "envelope.config";
-  private static final String ZOOKEEPER = "Zookeeper";
-  private static final String ZOOKEEPER_NODE_NAME = "ZookeeperNodeName";
 
-  private static Logger LOG = LoggerFactory.getLogger(MetronConfigLoader.class);
+public class MetronConfigLoader implements ConfigLoader, ProvidesAlias {
+  private final static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronConfigLoader.class);
 
-  private String zookeeperQuorum;
-  private String zookeeperNodeName;
+  private static final String CONFIG_LOADER_ALIAS = "metron-config-adaptor";
+  private static final String SPARK_ROW_ENCODING_STRATEGY = "spark-row-encoding-strategy";
+  private static final String ZOOKEEPER_QUORUM = "zookeeper-quorum";
+  private static final String CONFIG_ADAPTOR_TYPE = "adaptor-type";
+  private static final String CONFIG_ADAPTOR_TYPE_PARSER_ALIAS = "metron-parser";
+  private static final String CONFIG_PARSER_NAME = "parser-name";
 
-  private volatile Config metronConfig;
+  private static final String KAFKA_SECTION_NAME = "kafka";
+  private static final String KAFKA_BROKER = "brokers";
+  private static final String KAFKA_PARAMETER_PREFIX = "parameter";
+  public static final String KAFKA_SASL_MECHANISM = KAFKA_PARAMETER_PREFIX + ".sasl.mechanism";
+  public static final String KAFKA_SASL_KERB_SERVICE_NAME = KAFKA_PARAMETER_PREFIX + ".sasl.kerberos.service.name";
+  public static final String KAFKA_SSL_TRUSTSTORE_LOCATION = KAFKA_PARAMETER_PREFIX + ".ssl.truststore.location";
+  public static final String KAFKA_SSL_TRUSTSTORE_PASSWORD = KAFKA_PARAMETER_PREFIX + ".ssl.truststore.password";
+  public static final String KAFKA_SECURITY_PROTOCOL = KAFKA_PARAMETER_PREFIX + ".security.protocol";
 
-  /**
-   * Gets or creates a new metron config
-   * @return Metron configuration object
-   */
+  private static final Set<PosixFilePermission> tempfilePerms = PosixFilePermissions.fromString("rwx------");
+  private static final FileAttribute<Set<PosixFilePermission>> tempfileAttributes = PosixFilePermissions
+          .asFileAttribute(tempfilePerms);
+
+  private static final String PARSER_TEMPLATE = "steps {\n"+
+          "  metron-parser-%s {\n"+
+          "    input {\n"+
+          "      type = kafka\n"+
+          "      topics = [%s]\n"+
+          "      group.id = metron-parser-%s\n"+
+          "      # kafka-brokers\n"+
+          "      kafka-brokers = %s\n"+
+          "      # Kafka parameters \n" +
+          "      %s\n"+
+          "      translator {\n"+
+          "        type = raw\n"+
+          "      }\n"+
+          "    }\n"+
+          "    deriver {\n"+
+          "      type = metronParserAdapter\n"+
+          "      parser-name = %s\n"+
+          "      spark-row-encoding-strategy = %s\n"+
+          "      # zookeeper-quorum\n"+
+          "      zookeeper-quorum = %s\n"+
+          "      # kafka-brokers (used for error output)\n"+
+          "      kafka-brokers = %s\n"+
+          "      # Kafka parameters (used for error output)\n" +
+          "      %s\n"+
+          "    }\n"+
+          "    output {\n"+
+          "      type = kafka\n"+
+          "      # Kafka Broker"+
+          "      brokers = %s \n"+
+          "      # Kafka parameters\n" +
+          "      %s\n"+
+          "      # default topic is Enrichments\n" +
+          "      topic = %s\n"+
+          "      serializer {\n"+
+          "        type = delimited\n"+
+          "        field.delimiter = \",\"\n"+
+          "      }\n"+
+          "    }\n"+
+          "  }  \n"+
+          "}";
+
+  @NotNull
+  private final Set<String> supportedAdaptorTypes = ImmutableSet.of(
+          org.apache.metron.envelope.parsing.MetronSparkPartitionParser.class.getSimpleName());
+
+  @Nullable private String adaptorType;
+  @Nullable private String parserName;
+  @Nullable private String parserInputTopic;
+  @Nullable private String parserOutputTopic;
+  @Nullable private String sparkRowEncodingStrategy;
+  @Nullable private String zookeeperQuorum;
+  @Nullable private String kafkaBrokers;
+  @Nullable private Map<String,String> kafkaParams = null;
+
   @Override
-  public synchronized Config getConfig() {
-    Objects.requireNonNull(zookeeperQuorum);
+  public String getAlias() {
+    return CONFIG_LOADER_ALIAS;
+  }
+
+  @Override
+  @Nullable public Config getConfig() {
+    @NotNull final String kafkaParamString = kafkaParams == null ? "" : kafkaParams.entrySet().stream()
+            .map(entry -> String.format("%s = %s", entry.getKey(), entry.getValue()))
+            .collect(Collectors.joining("\n"));
+
+    @NotNull final String envelopeConfig = String.format(PARSER_TEMPLATE,
+            parserName,       // stage name is metron-parser-%s
+            // input sub-stage
+            parserInputTopic,
+            parserName,        // kafka input group id is metron-parser-%s\n"+
+            kafkaBrokers,
+            kafkaParamString,
+            // deriver sub-stage
+            parserName,
+            sparkRowEncodingStrategy,
+            zookeeperQuorum,
+            kafkaBrokers,
+            kafkaParamString,
+            // output sub-stage
+            kafkaBrokers,
+            kafkaParamString,
+            parserOutputTopic
+            );
+
+    LOG.info(String.format("Writing out envelope configuration of %s",envelopeConfig ));
+
+    @Nullable Config metronConfig = null;
+    @Nullable Path tempFile = null;
     try {
-      if (metronConfig == null) {
-        final CuratorFramework zkClient = ZookeeperClient.getZKInstance(zookeeperQuorum);
-        metronConfig = readMetronConfigFromZK(zkClient);
-        setDataWatch(zkClient);
+      tempFile = Files.createTempFile("temp-envelope-config", ".tmp", tempfileAttributes);
+      try (final OutputStream os = Files.newOutputStream(tempFile, StandardOpenOption.DELETE_ON_CLOSE)) {
+        os.write(envelopeConfig.getBytes(Charsets.UTF_8));
+        os.flush();
+        metronConfig = ConfigFactory.parseFile(tempFile.toFile());
       }
-    } catch (Exception e) {
-      LOG.error("Error reading configuration form zookeeper", e);
+    } catch (IOException e) {
+      @NotNull final String errorPath = tempFile == null ? "Null Path" : tempFile.getFileName().toAbsolutePath().toString();
+      LOG.error(String.format("Error writing out Metron Config to location %s",tempFile));
     }
     return metronConfig;
   }
 
-  private synchronized void setConfig(Config config) {
-    this.metronConfig = config;
+  @Override
+  public void configure(Config config) {
+    adaptorType = config.getString(CONFIG_ADAPTOR_TYPE);
+    sparkRowEncodingStrategy = config.getString(SPARK_ROW_ENCODING_STRATEGY);
+    if (sparkRowEncodingStrategy == null) {
+      // todo: change to actual default strategy
+      sparkRowEncodingStrategy = "default";
+    }
+    zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER_QUORUM),
+            String.format("%s is a required entry but not found", ZOOKEEPER_QUORUM));
+
+    LOG.debug("Adaptor type detected as %s", adaptorType);
+    if (CONFIG_ADAPTOR_TYPE_PARSER_ALIAS.equals(adaptorType)) {
+      parserName = config.getString(CONFIG_PARSER_NAME);
+      kafkaParams = config.atKey(KAFKA_SECTION_NAME)
+              .entrySet()
+              .stream()
+              .collect(Collectors.toMap(Map.Entry::getKey, entry -> config.getString( entry.getKey())));
+      // move kafka broker addresses to a separate variable if it exists
+      // todo: check if broker is available in zookeeper?
+      kafkaBrokers = kafkaParams.remove(KAFKA_BROKER);
+
+      // Now get config info that is only available in the Metron config hosted in zookeeper
+      try(final ParserConfigManager parserConfigManager = new ParserConfigManager(zookeeperQuorum)) {
+        @Nullable final SensorParserConfig sensorParserConfiguration = parserConfigManager.getConfigurations().getSensorParserConfig(parserName);
+        Objects.requireNonNull(sensorParserConfiguration,
+                String.format("Sensor %s in not listed in the Metron zookeeper-based configuration", parserName));
+        parserInputTopic = Objects.requireNonNull(sensorParserConfiguration.getSensorTopic(),
+                "Parser input topic required but not found in Metron zookeeper configuration");
+        parserOutputTopic = Objects.requireNonNull(sensorParserConfiguration.getOutputTopic(),
+                "Parser output topic required but not found in Metron zookeeper configuration");
+      }
+    }
+
+    validateConfiguation();
   }
 
-  private Config readMetronConfigFromZK(final CuratorFramework zkClient) throws Exception {
-    final byte[] configBytes = zkClient.getData().forPath(zookeeperNodeName);
-    return ConfigFactory.parseString(new String(configBytes, StandardCharsets.UTF_8), ConfigParseOptions.defaults());
-  }
+  private void validateConfiguation() {
+    Preconditions.checkArgument( supportedAdaptorTypes.contains(adaptorType),
+            String.format("Unsupported adaptor type %s",adaptorType));
+    // todo: validate row encoding value
 
-  private void setDataWatch(final CuratorFramework zkClient) {
-    try {
-      zkClient.checkExists()
-              .usingWatcher((CuratorWatcher) watchedEvent -> {
-                if (watchedEvent.getType() == Watcher.Event.EventType.NodeDataChanged) {
-                  LOG.info("Change of configuration detected - forcing a reload next time config needed");
-                  setConfig(null);
-                }
-              })
-              .forPath(zookeeperNodeName);
-    } catch (Exception e) {
-      LOG.error("Error setting data watch on Metron config node", e);
+    if (CONFIG_ADAPTOR_TYPE_PARSER_ALIAS.equals(adaptorType)) {
+      validateParserConfiguration();
     }
   }
 
-  @Override
-  public void configure(Config config) {
-    zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper Quorum required");
-    zookeeperNodeName = MoreObjects.firstNonNull(config.getString(ZOOKEEPER_NODE_NAME), DEFAULT_ENVELOPE_CONFIG_PATH);
+  private void validateParserConfiguration() {
   }
 }

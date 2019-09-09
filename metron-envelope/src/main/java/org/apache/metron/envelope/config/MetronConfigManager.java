@@ -50,7 +50,7 @@ import java.util.Objects;
  *
  * @param <CONFIG_T> The config type being used, e.g. {@link ParserConfigurations}
  */
-public abstract class ConfigManager<CONFIG_T extends Configurations> implements AutoCloseable, Reloadable {
+public abstract class MetronConfigManager<CONFIG_T extends Configurations> implements AutoCloseable, Reloadable {
   private static final LazyLogger LOG =  LazyLoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   @NotNull private final String zookeeperUrl;
@@ -66,7 +66,7 @@ public abstract class ConfigManager<CONFIG_T extends Configurations> implements 
    *
    * @param zookeeperUrl A URL for ZooKeeper in the form host:port
    */
-  public ConfigManager(String zookeeperUrl, String configurationStrategy) {
+  public MetronConfigManager(String zookeeperUrl, String configurationStrategy) {
     this.zookeeperUrl = Objects.requireNonNull(zookeeperUrl);
     this.configurationStrategy = Objects.requireNonNull(configurationStrategy);
     this.configurations = Objects.requireNonNull(createUpdater().defaultConfigurations());

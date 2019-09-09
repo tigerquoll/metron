@@ -15,13 +15,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron.envelope.config;
+package org.apache.metron.envelope.encoding;
 
-import org.apache.metron.common.configuration.ParserConfigurations;
-import org.apache.metron.common.configuration.writer.ConfigurationsStrategies;
+import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
+import org.jetbrains.annotations.Nullable;
 
-public class ParserConfigManager extends MetronConfigManager<ParserConfigurations> {
-  public ParserConfigManager(String zookeeperURL) {
-    super(zookeeperURL, ConfigurationsStrategies.ENRICHMENT.toString());
+public class CorePlusCborKafkaAvro extends AbstractCorePlusKafkaAvro implements SparkRowEncodingStrategy {
+  private static final String AVRO_SCHEMA_NAME = "CorePlusCborKafkaAvro1";
+
+  @Override
+  public void init(@Nullable String additionalConfig) {
+    super.init(new CBORFactory(), DataFieldType.FieldType_Binary, KafkaSerializationType.avro, additionalConfig);
   }
+
+  @Override
+  protected String getAvroSchemaName() {
+    return AVRO_SCHEMA_NAME;
+  }
+
+
 }

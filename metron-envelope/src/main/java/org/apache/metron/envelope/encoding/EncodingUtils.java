@@ -23,7 +23,7 @@ public final class EncodingUtils {
    * @return Encoded data (either String or Byte[] depending on configuration)
    * @throws JsonProcessingException if serialisation error occurs
    */
-  static Object encodeJsonFields(ObjectMapper mapper, SparkRowEncodingStrategy.DataFieldType dataFieldType, JSONObject parsedMessage) throws JsonProcessingException {
+  static Object encodeCombinedFields(ObjectMapper mapper, SparkRowEncodingStrategy.DataFieldType dataFieldType, JSONObject parsedMessage) throws JsonProcessingException {
     // Copy remaining fields into a standard HashMap to make sure it encodes cleanly.
     final Set<Map.Entry> reminaingFields = parsedMessage.entrySet();
     final Map<String,Object> remainingFieldsCopy = reminaingFields.stream()

@@ -26,7 +26,6 @@ import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
-import org.apache.metron.envelope.encoding.HybridFieldEncodingStrategy;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 
 import org.apache.spark.api.java.function.MapPartitionsFunction;
@@ -35,10 +34,8 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.encoders.RowEncoder;
 
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import parquet.Preconditions;
 
-import javax.validation.constraints.Null;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
@@ -117,7 +114,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionEnricher)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getParserOutputSchema()));
+    }, RowEncoder.apply(encodingStrategy.getParserSparkOutputSchema()));
 
     return dst;
   }

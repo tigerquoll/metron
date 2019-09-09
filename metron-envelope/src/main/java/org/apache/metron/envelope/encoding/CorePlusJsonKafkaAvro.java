@@ -15,13 +15,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.metron.envelope.config;
+package org.apache.metron.envelope.encoding;
 
-import org.apache.metron.common.configuration.ParserConfigurations;
-import org.apache.metron.common.configuration.writer.ConfigurationsStrategies;
+import com.fasterxml.jackson.core.JsonFactory;
+import org.jetbrains.annotations.Nullable;
 
-public class ParserConfigManager extends MetronConfigManager<ParserConfigurations> {
-  public ParserConfigManager(String zookeeperURL) {
-    super(zookeeperURL, ConfigurationsStrategies.ENRICHMENT.toString());
+public class CorePlusJsonKafkaAvro extends AbstractCorePlusKafkaAvro {
+  private static final String AVRO_SCHEMA_NAME = "CorePlusJsonKafkaAvro1";
+
+  @Override
+  public void init(@Nullable String additionalConfig) {
+    super.init(new JsonFactory(), DataFieldType.FieldType_String, KafkaSerializationType.avro, additionalConfig);
+  }
+
+  @Override
+  protected String getAvroSchemaName() {
+    return AVRO_SCHEMA_NAME;
   }
 }

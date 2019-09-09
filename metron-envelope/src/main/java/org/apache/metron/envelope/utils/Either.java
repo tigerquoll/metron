@@ -11,6 +11,7 @@ import java.util.stream.Stream;
 
 /**
  * A value that contains either a result value or an error value
+ * These are immutable classes, sub-classes are used for Error and Success
  * @param <E> Type of error
  * @param <R> Type of result
  */
@@ -75,10 +76,15 @@ public abstract class Either<E, R> {
 
   public abstract void forEach(@NotNull Consumer<R> action);
 
+  /**
+   * A Result value that may be null
+   * @param <E> Error Type
+   * @param <R> Result TYpe
+   */
   private static class NullableResult<E,R> extends Either<E,R> {
-    protected final R resultVal;
+    final R resultVal;
 
-    public NullableResult(@Nullable R result) {
+    NullableResult(@Nullable R result) {
       this.resultVal = result;
     }
 
@@ -182,8 +188,13 @@ public abstract class Either<E, R> {
     }
   }
 
+  /**
+   * A result value that cannot be null
+   * @param <E> Error Type
+   * @param <R> Result Type
+   */
   private static class Result<E,R> extends NullableResult<E,R> {
-    public Result(@NotNull R result) {
+    Result(@NotNull R result) {
       super(result);
     }
 
@@ -207,10 +218,15 @@ public abstract class Either<E, R> {
     }
   }
 
+  /**
+   * An Error Value that can be null
+   * @param <E> Error Type
+   * @param <R> Result Type
+   */
   private static class NullableError<E,R> extends Either<E,R> {
-    protected final E errorVal;
+    final E errorVal;
 
-    public NullableError(@Nullable E error) {
+    NullableError(@Nullable E error) {
       this.errorVal = error;
     }
 
@@ -310,8 +326,13 @@ public abstract class Either<E, R> {
     }
   }
 
+  /**
+   * An error Value that cannot be null
+   * @param <E> Error TYpe
+   * @param <R> Result Type
+   */
   private static class Error<E,R> extends NullableError<E,R> {
-    public Error(@NotNull E error) {
+    Error(@NotNull E error) {
       super(error);
     }
 

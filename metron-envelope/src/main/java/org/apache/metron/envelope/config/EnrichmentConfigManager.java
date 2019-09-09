@@ -20,7 +20,7 @@ package org.apache.metron.envelope.config;
 import org.apache.metron.common.configuration.EnrichmentConfigurations;
 import org.apache.metron.common.configuration.writer.ConfigurationsStrategies;
 
-public class EnrichmentConfigManager extends ConfigManager<EnrichmentConfigurations> {
+public class EnrichmentConfigManager extends MetronConfigManager<EnrichmentConfigurations> {
   public EnrichmentConfigManager(String zookeeperURL) {
     super(zookeeperURL, ConfigurationsStrategies.ENRICHMENT.toString());
   }

@@ -2,8 +2,8 @@ package org.apache.metron.envelope.encoding;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.utils.RowUtils;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import envelope.shaded.com.google.common.collect.ImmutableSet;
 import org.apache.metron.common.error.MetronError;
@@ -49,6 +49,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
     DataFieldType(DataType dataType) {
       this.dataType = dataType;
     }
+
     protected DataType dataType;
     public DataType getSparkFieldType() {
       return dataType;
@@ -60,17 +61,25 @@ public interface SparkRowEncodingStrategy extends Serializable {
     }
   }
 
+
+
   /**
    * Initialise any serialization libraries
    */
-  void init(@Nullable String additionalConfig)
+  public void init(@Nullable String additionalConfig);
 
   /**
    * Spark schema of the data after it has been parsed by Metron
    *
    * @return spark schema struct
    */
-  StructType getParserOutputSchema();
+  StructType getParserSparkOutputSchema();
+
+  /**
+   * The Avro schema of the a parsed message as it is stored in Kafka
+   * @return
+   */
+  String getParserOutputKafkaAvroSchema();
 
   /**
    * Encode a metron parse error into a Spark row
@@ -87,6 +96,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    * @return Spark row encoded to our output schema, null if serialisation error occurred
    */
   RowWithSchema encodeParserResultIntoSparkRow(@NotNull JSONObject parsedMessage) throws JsonProcessingException;
+
 
   /**
    * Decode a parsed message that has been read from Kafka
