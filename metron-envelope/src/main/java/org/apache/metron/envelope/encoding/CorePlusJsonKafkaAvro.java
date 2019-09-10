@@ -18,18 +18,17 @@
 package org.apache.metron.envelope.encoding;
 
 import com.fasterxml.jackson.core.JsonFactory;
-import org.jetbrains.annotations.Nullable;
 
-public class CorePlusJsonKafkaAvro extends AbstractCorePlusKafkaAvro {
+public class CorePlusJsonKafkaAvro extends AbstractSparkRowEncodingStrategy implements SparkRowEncodingStrategy {
   private static final String AVRO_SCHEMA_NAME = "CorePlusJsonKafkaAvro1";
 
   @Override
-  public void init(@Nullable String additionalConfig) {
-    super.init(new JsonFactory(), DataFieldType.FieldType_String, KafkaSerializationType.avro, additionalConfig);
+  public void init() {
+    super.init(new JsonFactory(),
+            DataFieldType.FieldType_String,
+            KafkaSerializationType.avro,
+            FieldLayoutType.corePlus,
+            AVRO_SCHEMA_NAME);
   }
 
-  @Override
-  protected String getAvroSchemaName() {
-    return AVRO_SCHEMA_NAME;
-  }
 }

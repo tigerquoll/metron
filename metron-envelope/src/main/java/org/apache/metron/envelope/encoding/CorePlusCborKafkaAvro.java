@@ -20,17 +20,16 @@ package org.apache.metron.envelope.encoding;
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
 import org.jetbrains.annotations.Nullable;
 
-public class CorePlusCborKafkaAvro extends AbstractCorePlusKafkaAvro implements SparkRowEncodingStrategy {
+public class CorePlusCborKafkaAvro extends AbstractSparkRowEncodingStrategy implements SparkRowEncodingStrategy {
   private static final String AVRO_SCHEMA_NAME = "CorePlusCborKafkaAvro1";
 
   @Override
-  public void init(@Nullable String additionalConfig) {
-    super.init(new CBORFactory(), DataFieldType.FieldType_Binary, KafkaSerializationType.avro, additionalConfig);
-  }
-
-  @Override
-  protected String getAvroSchemaName() {
-    return AVRO_SCHEMA_NAME;
+  public void init() {
+    super.init(new CBORFactory(),
+            DataFieldType.FieldType_Binary,
+            KafkaSerializationType.avro,
+            FieldLayoutType.corePlus,
+            AVRO_SCHEMA_NAME);
   }
 
 

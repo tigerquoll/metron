@@ -25,59 +25,20 @@ import java.util.Set;
  */
 public interface SparkRowEncodingStrategy extends Serializable {
   /**
-   * Reserved fields used in all row encoding strategies
-   */
-  String ERROR_INDICATOR_FIELD = "_isErrorValue";
-  Object ERROR_INDICATOR_FALSE = RowUtils.toRowValue(false, DataTypes.BooleanType);
-  Object ERROR_INDICATOR_TRUE = RowUtils.toRowValue(true, DataTypes.BooleanType);
-
-  String SCHEMA_VERSION_FIELD = "_schemaVersion";
-  Object VERSION_ONE = RowUtils.toRowValue(1, DataTypes.ShortType);
-  String DATA_FIELD = "_dataValue";
-
-  StructField errorIndFieldSchema = DataTypes.createStructField(ERROR_INDICATOR_FIELD, DataTypes.BooleanType, false);
-  StructField versionFieldSchema = DataTypes.createStructField(SCHEMA_VERSION_FIELD, DataTypes.ShortType, false);
-  Set<String> reservedFieldNames = ImmutableSet.of(SCHEMA_VERSION_FIELD, DATA_FIELD, ERROR_INDICATOR_FIELD);
-
-  /**
-   * Encapsulates the choice of String or Text Field for the Composite Field containing non-standard fields values.
-   */
-  enum DataFieldType {
-    FieldType_String(DataTypes.StringType),
-    FieldType_Binary(DataTypes.BinaryType);
-
-    DataFieldType(DataType dataType) {
-      this.dataType = dataType;
-    }
-
-    protected DataType dataType;
-    public DataType getSparkFieldType() {
-      return dataType;
-    }
-    public Object mapValue(ObjectMapper mapper, Object value) throws JsonProcessingException {
-      return (this == FieldType_Binary) ?
-              mapper.writeValueAsBytes(value) :
-              mapper.writeValueAsString(value);
-    }
-  }
-
-
-
-  /**
    * Initialise any serialization libraries
    */
-  public void init(@Nullable String additionalConfig);
+  void init();
 
   /**
    * Spark schema of the data after it has been parsed by Metron
    *
    * @return spark schema struct
    */
-  StructType getParserSparkOutputSchema();
+  StructType getParserOutputSparkSchema();
 
   /**
-   * The Avro schema of the a parsed message as it is stored in Kafka
-   * @return
+   * The Avro schema of the parsed message as it is stored in Kafka
+   * @return Kafka Avro schema
    */
   String getParserOutputKafkaAvroSchema();
 

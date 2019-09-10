@@ -26,14 +26,13 @@ import org.jetbrains.annotations.Nullable;
  * - Metron Data is Serialized via JSON into a text field
  * - When passed over Kafka, Metron Data is encoded into the Kafka message body as a single JSON String
  */
-public class CombinedJsonKafkaText extends AbstractCombined implements SparkRowEncodingStrategy {
+public class CombinedJsonKafkaText extends AbstractSparkRowEncodingStrategy implements SparkRowEncodingStrategy {
   @Override
-  public void init(@Nullable String additionalConfig) {
-    super.init(new JsonFactory(), DataFieldType.FieldType_String, KafkaSerializationType.text, additionalConfig);
-  }
-
-  @Override
-  protected String getAvroSchemaName() {
-    throw new UnsupportedOperationException("CombinedJsonKafkaText SparkRowEncoder cannot be used with Avro");
+  public void init() {
+    super.init(new JsonFactory(),
+            DataFieldType.FieldType_String,
+            KafkaSerializationType.text,
+            FieldLayoutType.combined,
+            null);
   }
 }
