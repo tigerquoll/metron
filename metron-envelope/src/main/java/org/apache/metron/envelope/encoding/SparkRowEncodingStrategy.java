@@ -16,6 +16,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.json.simple.JSONObject;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.Set;
 
@@ -42,6 +43,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    */
   String getParserOutputKafkaAvroSchema();
 
+  String getEnvelopeKafkaOuputSerialisationSection() throws IOException;
   /**
    * Encode a metron parse error into a Spark row
    *

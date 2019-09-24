@@ -24,7 +24,7 @@ import org.jetbrains.annotations.Nullable;
  * A Spark Row Encoding Strategy that:
  * - Encodes all Metron data into a single field
  * - Metron Data is Serialized via JSON into a text field
- * - When passed over Kafka, Metron Data is encoded into the Kafka message body as a single JSON String
+ * - Metron Data is encoded into the Kafka message body as a single text JSON String
  */
 public class CombinedJsonKafkaText extends AbstractSparkRowEncodingStrategy implements SparkRowEncodingStrategy {
   @Override

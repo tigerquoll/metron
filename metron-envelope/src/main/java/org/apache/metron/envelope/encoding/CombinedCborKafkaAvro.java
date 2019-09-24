@@ -19,6 +19,12 @@ package org.apache.metron.envelope.encoding;
 
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
 
+/**
+ * A Spark Row Encoding Strategy that:
+ *  - Encodes all Metron data in a a single field
+ *  - Metron data is serialized via CBOR into a binary field
+ *  - Metron data is encoded into the Kafka message body as a single binary field.
+ */
 public class CombinedCborKafkaAvro extends AbstractSparkRowEncodingStrategy implements SparkRowEncodingStrategy {
   private static final String AVRO_SCHEMA_NAME = "CorePlusCborKafkaAvro1";
 

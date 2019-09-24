@@ -108,7 +108,7 @@ public class MetronConfigLoader implements ConfigLoader, ProvidesAlias {
           "    }\n"+
           "  }  \n"+
           "}";
-
+  // todo: separate error stream to error topic
   @NotNull
   private final Set<String> supportedAdaptorTypes = ImmutableSet.of(
           org.apache.metron.envelope.parsing.MetronSparkPartitionParser.class.getSimpleName());

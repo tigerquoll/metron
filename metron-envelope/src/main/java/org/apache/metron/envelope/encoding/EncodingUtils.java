@@ -9,8 +9,11 @@ import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
 import org.json.simple.JSONObject;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -61,4 +64,6 @@ final class EncodingUtils {
               + " by internal Metron Processing %s", fieldsInError.stream().collect(Collectors.joining(",", "{", "}"))));
     }
   }
+
+
 }

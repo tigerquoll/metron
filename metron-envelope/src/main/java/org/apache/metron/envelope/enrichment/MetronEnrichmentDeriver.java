@@ -114,7 +114,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionEnricher)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getParserSparkOutputSchema()));
+    }, RowEncoder.apply(encodingStrategy.getParserOutputSparkSchema()));
 
     return dst;
   }

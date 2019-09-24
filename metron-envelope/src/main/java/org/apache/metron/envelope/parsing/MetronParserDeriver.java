@@ -43,7 +43,6 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "metronParserAdapter";
   private static final String ZOOKEEPER = "ZookeeperQuorum";
   private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
-  private static final String SPARK_ROW_ENCODING_CONFIG = "SparkRowEncodingStrategyConfig";
 
   private String parserName = null;
   private String zookeeperQuorum = null;
@@ -58,17 +57,12 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   @Override
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
-
     parserName = Objects.requireNonNull(config.getString("parser-name"), "parser name is required");
 
     final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
-
-    @Nullable final String rowEncodingConfig = config.getString(SPARK_ROW_ENCODING_CONFIG);
-    encodingStrategy.init(rowEncodingConfig);
+    encodingStrategy.init();
   }
-
-
 
   @Override
   public Dataset<Row> derive(Map<String, Dataset<Row>> srcDataset) {
@@ -93,7 +87,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionParser)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getParserSparkOutputSchema()));
+    }, RowEncoder.apply(encodingStrategy.getParserOutputSparkSchema()));
 
     return dst;
   }

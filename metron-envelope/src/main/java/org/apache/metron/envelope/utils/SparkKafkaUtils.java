@@ -52,30 +52,7 @@ public final class SparkKafkaUtils {
     );
   }
 
-  public static Schema generateAvroSchema(final StructField [] sparkSchema, final String schemaName) {
-    SchemaBuilder.FieldAssembler<Schema> partialSchema = SchemaBuilder
-            .record(schemaName)
-            .namespace(ORG_APACHE_METRON_AVRO)
-            .fields();
-    for (StructField x : sparkSchema) {
-      final SchemaBuilder.BaseFieldTypeBuilder<Schema> partialFieldDef = partialSchema.name(x.name()).type().nullable();
-      final DataType dataType = x.dataType();
 
-      // Scala enums can be used as the basis of a Java switch statement unfortunately
-      if (DataTypes.StringType.equals(dataType)) {
-        partialSchema = partialFieldDef.stringType().noDefault();
-      } else if (DataTypes.IntegerType.equals(dataType)) {
-        partialSchema = partialFieldDef.intType().noDefault();
-      } else if (DataTypes.LongType.equals(dataType)) {
-        partialSchema = partialFieldDef.longType().noDefault();
-      } else if (DataTypes.BinaryType.equals(dataType)) {
-        partialSchema = partialFieldDef.bytesType().noDefault();
-      } else {
-        throw new UnsupportedOperationException(String.format("Do not know how to convert spark sql type %s into Avro", x.toString()));
-      }
-    }
-    return partialSchema.endRecord();
-  }
   /**
    * Specialised Pair class to contain retrieved Kafka Messages
    * @param <K> Type of the Key field
