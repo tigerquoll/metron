@@ -35,7 +35,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    *
    * @return spark schema struct
    */
-  StructType getParserOutputSparkSchema();
+  StructType getOutputSparkSchema();
 
   /**
    * The Avro schema of the parsed message as it is stored in Kafka
@@ -66,6 +66,15 @@ public interface SparkRowEncodingStrategy extends Serializable {
    * @param row Message to decode
    * @return JSONObject containing the message
    */
-  JSONObject decodeParsedMessage(@NotNull Row row);
+  JSONObject decodeParsedMessageFromKafka(@NotNull Row row);
+
+  /**
+   * Encode a metron enrichmented message into a Spark row
+   * @param enrichedMessage  The message to encode
+   * @return  The enriched message, encoded into our chosen spark encoding mechanism
+   */
+  RowWithSchema encodeEnrichedMessageIntoSparkRow(@NotNull JSONObject enrichedMessage) throws JsonProcessingException ;
+
+  RowWithSchema encodeEnrichErrorIntoSparkRow(@NotNull MetronError metronError);
 
 }

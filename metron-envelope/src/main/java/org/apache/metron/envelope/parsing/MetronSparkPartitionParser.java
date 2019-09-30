@@ -19,10 +19,11 @@ package org.apache.metron.envelope.parsing;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.translate.Translator;
-import com.fasterxml.jackson.core.JsonFactory;
 import com.github.benmanes.caffeine.cache.Cache;
-import envelope.shaded.com.google.common.collect.ImmutableMap;
-import envelope.shaded.com.google.common.collect.Iterables;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.metron.common.Constants;
 import org.apache.metron.common.configuration.SensorParserConfig;
 import org.apache.metron.common.error.MetronError;
 import org.apache.metron.common.message.metadata.MetadataUtil;
@@ -31,10 +32,11 @@ import org.apache.metron.common.message.metadata.RawMessageStrategy;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.metron.envelope.utils.Either;
-import org.apache.metron.envelope.utils.ErrorUtils.ErrorInfo;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.ParserConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
+import org.apache.metron.envelope.utils.MetronErrorHandler;
+import org.apache.metron.envelope.utils.MetronErrorHandlerImpl;
 import org.apache.metron.envelope.utils.SparkKafkaUtils;
 import org.apache.metron.parsers.ParserRunner;
 import org.apache.metron.parsers.ParserRunnerImpl;
@@ -54,11 +56,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.metron.envelope.utils.ErrorUtils.catchErrorsAndNullsWithCause;
+import static org.apache.metron.envelope.utils.MetronErrorUtils.convertErrorsToMetronErrors;
 import static org.apache.metron.envelope.utils.SparkKafkaUtils.ENVELOPE_KAFKA_TOPICNAME_FIELD;
 
 /**
@@ -67,25 +70,48 @@ import static org.apache.metron.envelope.utils.SparkKafkaUtils.ENVELOPE_KAFKA_TO
  */
 public class MetronSparkPartitionParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>> {
   @NotNull public static final String UNKNOWN = "Unknown";
+  public static final String METRON_SPARK_PARSER_ERROR_REPORTER = "Metron Spark Parser Error Reporter";
   @NotNull private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
 
   @NotNull private ParserConfigManager parserConfigManager;
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
-
+  @NotNull private MetronErrorHandler metronErrorHandler;
+  @NotNull private String kafkaBrokers;
 
   private ParserRunner<JSONObject> envelopeParserRunner;
   private Map<String, String> topicToSensorMap;
+
+  // Map between SensorType and the relevant errorHandling logic
+  private Map<String, MetronErrorHandler> metronErrorHandlers = null;
+
+  // Kafka Producer for handling errors
+  private static volatile KafkaProducer<String,String> metronErrorKafkaProducer;
+
+  static void initMetronErrorKafkaProducer(String kafkaBrokers) {
+    synchronized (MetronSparkPartitionParser.class) {
+      if (metronErrorKafkaProducer != null) {
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers);
+        props.put(ProducerConfig.CLIENT_ID_CONFIG, METRON_SPARK_PARSER_ERROR_REPORTER);
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        metronErrorKafkaProducer = new KafkaProducer<>(props);
+      }
+    }
+  }
 
   /**
    * This object gets reconstructed for every partition of data,
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    */
-  MetronSparkPartitionParser(@NotNull String zookeeperQuorum, @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
+  MetronSparkPartitionParser(@NotNull String zookeeperQuorum,
+                             @NotNull String kafkaBrokers,
+                             @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
     this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
-    this.parserConfigManager = new ParserConfigManager(zookeeperQuorum);
+    this.kafkaBrokers = Objects.requireNonNull(kafkaBrokers);
   }
 
   /**
@@ -93,11 +119,26 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
    * @throws Exception on error
    */
   public void init() throws Exception {
+    parserConfigManager = new ParserConfigManager(zookeeperQuorum);
+    if (metronErrorKafkaProducer == null) {
+      initMetronErrorKafkaProducer(kafkaBrokers);
+    }
+
     @NotNull final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
+    metronErrorHandlers = createSensorTypeToErrorHandler(sensorTypes);
     topicToSensorMap = createTopicToSensorMap(sensorTypes);
     envelopeParserRunner = new ParserRunnerImpl(new HashSet<>(sensorTypes));
     envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), initializeStellar(sensorTypes));
   }
+
+  private Map<String, MetronErrorHandler> createSensorTypeToErrorHandler(@NotNull List<String> sensorTypes) {
+    return sensorTypes.stream()
+            .collect(Collectors.toMap(
+                    sensor -> sensor,
+                    sensor -> new MetronErrorHandlerImpl(metronErrorKafkaProducer,
+                            parserConfigManager.getConfigurations().getSensorParserConfig(sensor).getErrorTopic())));
+  }
+
 
   /**
    * Used to map incoming data to the processing configured for all data coming from that sensor
@@ -160,89 +201,37 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     if (nullableRow == null) {
       return Collections.emptyList();
     }
-    @NotNull Row row = nullableRow;
+    @NotNull Row row = Objects.requireNonNull(nullableRow);
 
     // Run Configured Metron parsers across the input data
     @NotNull final ParserRunnerResults<JSONObject> runnerResults = Objects.requireNonNull(getResults(row));
 
     // encode results into Spark Rows
-    @NotNull final List<RowWithSchema> encodedResults = encodeResults(runnerResults.getMessages());
+    @NotNull final Stream<Either<MetronError, RowWithSchema>> encodedMessages =
+            runnerResults.getMessages().stream()
+                    .filter( x -> {
+                      if (x == null) LOGGER.warn("Parsing produced a null message - ignoring");
+                      return x != null;
+                    })
+                    .map(convertErrorsToMetronErrors(Constants.ErrorType.PARSER_ERROR,
+                            x -> encodingStrategy.encodeParserResultIntoSparkRow(x)));
 
-    // encode Errors into Spark Rows
-    @NotNull final List<RowWithSchema> encodedErrorResults = encodeErrors(runnerResults.getErrors());
+    // report any errors
+    Stream.of(
+            runnerResults.getErrors().stream(),
+            encodedMessages.flatMap(Either::getErrors)
+    )
+    .flatMap(Function.identity()) // flatten to a simple stream of MetronErrors
+    .forEach(err -> {
+            LOGGER.error("Error parsing message {}", err.getJSONObject());
+            metronErrorHandler.handleError(err);
+            }
+    );
 
-    if (!encodedErrorResults.isEmpty()) {
-      // send Errors to error topic
-    }
-
-    return Iterables.concat(encodedResults, encodedErrorResults);
-
-  }
-
-  @NotNull
-  private List<RowWithSchema> encodeResults(@Nullable List<JSONObject> results) {
-    @NotNull List<RowWithSchema> encodedResults = Collections.emptyList();
-
-    if ((results != null) && (!results.isEmpty())) {
-      // Encode Metron Parser Results into Spark Rows
-      @NotNull final Stream<Either<ErrorInfo<Exception, JSONObject>, RowWithSchema>> encodedMessages =
-              results.stream()
-                      .flatMap( x -> {
-                        if (x == null) {
-                          LOGGER.warn("Metron Parsing produced a null message - ignoring ");
-                          return Stream.empty();
-                        } else {
-                          return Stream.of(x);
-                        }
-                      })
-                      .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserResultIntoSparkRow(x)));
-
-      // report any Serialisation Exceptions
-      encodedMessages.flatMap(Either::getErrorStream)
-              .forEach(x -> LOGGER.error(String.format("Error serialisation Exception %s, JSONMessage %s",
-                      x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
-
-      // collect results
-      encodedResults = encodedMessages
-              .flatMap(Either::getStream)
-              .collect(Collectors.toList());
-    }
-    return encodedResults;
-  }
-
-  /**
-   * Encode any Metron Errors into Spark rows
-   * @param metronErrors Parse errors
-   * @return List of spark rows containing encoded Metron Errors (empty list if no Metron errors present)
-   */
-  @NotNull
-  private List<RowWithSchema> encodeErrors(@Nullable List<MetronError> metronErrors) {
-    @NotNull List<RowWithSchema> encodedErrorResults = Collections.emptyList();
-
-    if ((metronErrors != null) && (!metronErrors.isEmpty())) {
-      // Convert MetronErrors to spark rows
-      @NotNull
-      final Stream<Either<ErrorInfo<Exception,MetronError>,RowWithSchema>> encodedErrors = metronErrors
-              .stream()
-              .flatMap( x -> {
-                if (x == null) {
-                  LOGGER.warn("Metron Parsing produced a null error - ignoring ");
-                  return Stream.empty();
-                } else {
-                  return Stream.of(x);
-                }
-              })
-              .map(catchErrorsAndNullsWithCause(x -> encodingStrategy.encodeParserErrorIntoSparkRow(x)));
-
-      // report any Serialisation Exceptions
-      encodedErrors.flatMap(Either::getErrorStream)
-              .forEach( x -> LOGGER.error(String.format("Error serialisation Exception %s, MetronError %s",
-                      x.getExceptionStringOr(UNKNOWN), x.getCauseStringOr(UNKNOWN))));
-
-      encodedErrorResults = encodedErrors.flatMap(Either::getStream)
-              .collect(Collectors.toList());
-    }
-    return encodedErrorResults;
+    // return an iterable of our results
+    return encodedMessages
+            .flatMap(Either::getData)
+            .collect(Collectors.toList());
   }
 
   /**

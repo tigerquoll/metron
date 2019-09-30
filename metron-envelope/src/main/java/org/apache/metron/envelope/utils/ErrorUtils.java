@@ -1,5 +1,7 @@
 package org.apache.metron.envelope.utils;
 
+import org.apache.metron.common.Constants;
+import org.apache.metron.common.error.MetronError;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -163,4 +165,7 @@ public class ErrorUtils {
     };
   }
 
+
+
+  }
 }

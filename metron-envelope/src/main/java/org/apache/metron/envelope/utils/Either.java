@@ -55,7 +55,7 @@ public abstract class Either<E, R> {
   public abstract Optional<E> errorToOption();
 
   @NotNull
-  public abstract Stream<E> getErrorStream();
+  public abstract Stream<E> getErrors();
 
   @NotNull
   public abstract <T> Optional <T> errorMap(@NotNull Function <? super E,T> mapper);
@@ -69,7 +69,7 @@ public abstract class Either<E, R> {
   public abstract Optional<R> getOption();
 
   @NotNull
-  public abstract Stream<R> getStream();
+  public abstract Stream<R> getData();
 
   @NotNull
   public abstract <T> Optional <T> map(@NotNull Function<? super R,T> mapper) ;
@@ -124,7 +124,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<E> getErrorStream() {
+    public Stream<E> getErrors() {
       return Stream.empty();
     }
 
@@ -152,7 +152,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<R> getStream() {
+    public Stream<R> getData() {
       return Stream.of(resultVal);
     }
 
@@ -262,7 +262,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<E> getErrorStream() {
+    public Stream<E> getErrors() {
       return Stream.of(errorVal);
     }
 
@@ -291,7 +291,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<R> getStream() {
+    public Stream<R> getData() {
       return Stream.empty();
     }
 

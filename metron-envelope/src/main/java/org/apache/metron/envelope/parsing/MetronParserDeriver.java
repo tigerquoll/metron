@@ -27,7 +27,6 @@ import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.encoders.RowEncoder;
-import org.jetbrains.annotations.Nullable;
 import parquet.Preconditions;
 
 import java.util.Iterator;
@@ -81,13 +80,13 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
         // we use iterator transforms so we can stream iterator processing
         // which means we do not require the entire dataset to be pulled into memory at once
         // Could we use java 8 streams for this?
-        // If we did, I'm not sure the entire expression would be lazy, better to be sure.
+        // If we did, I'm not sure the entire expression would be lazy, best to be sure.
         return FluentIterable.from(() -> iterator)
-                // transformAndConcat is the guava equivalent of a flatmap
+                // transformAndConcat is the guava equivalent of a flatMap
                 .transformAndConcat(metronSparkPartitionParser)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getParserOutputSparkSchema()));
+    }, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
 
     return dst;
   }

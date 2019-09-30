@@ -114,10 +114,16 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     }
   }
 
+  private StructType errorSchema = DataTypes.createStructType(
+          Collections.singletonList(
+                  DataTypes.createStructField("error", DataTypes.StringType, true)
+          )
+  );
+
   /**
    * The actual Spark SQL Schema for Parser Output
    */
-  private StructType parserOutputSparkSchema = null;
+  private StructType outputSparkSchema = null;
 
   /**
    * Used to encode multiple fields into a single field
@@ -135,8 +141,8 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
   private Map<String, StructField> schemaIndex;
 
   @Override
-  public StructType getParserOutputSparkSchema() {
-    return parserOutputSparkSchema;
+  public StructType getOutputSparkSchema() {
+    return outputSparkSchema;
   }
 
   @Override
@@ -218,7 +224,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     mapper = new ObjectMapper( Objects.requireNonNull(jsonFactory) );
 
     // construct our actual spark schema by combining the template plus our parameterised data field
-    parserOutputSparkSchema = DataTypes.createStructType(new ImmutableList.Builder<StructField>()
+    outputSparkSchema = DataTypes.createStructType(new ImmutableList.Builder<StructField>()
             .addAll(getParserOutputSparkSchemaBaseTemplate())
             .add(DataTypes.createStructField(DATA_FIELD_NAME, dataFieldType.getSparkFieldType(), false))
             .build()
@@ -226,7 +232,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
 
     if (kafkaSerializationType == KafkaSerializationType.avro) {
       // Generate our avro schema for use with Kafka, escape quotes so we can embed it cleanly into a envelope config file
-      parserOutputKafkaSchema = AvroUtils.schemaFor(parserOutputSparkSchema).toString(true).replaceAll("\"", "\\\"");
+      parserOutputKafkaSchema = AvroUtils.schemaFor(outputSparkSchema).toString(true).replaceAll("\"", "\\\"");
     }
 
     if ((fieldLayoutType == FieldLayoutType.corePlus) &&
@@ -234,50 +240,64 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
       throw new IllegalStateException("CorePlus Strategies must always be Avro encoded");
     }
 
-    schemaIndex = generateFieldIndex(fieldLayoutType,parserOutputSparkSchema);
+    schemaIndex = generateFieldIndex(fieldLayoutType, outputSparkSchema);
 
-    Objects.requireNonNull(parserOutputSparkSchema);
+    Objects.requireNonNull(outputSparkSchema);
     Objects.requireNonNull(mapper);
   }
 
-
-
   @Override
   public RowWithSchema encodeParserErrorIntoSparkRow(@NotNull MetronError metronError) throws JsonProcessingException {
-    RowWithSchema rowWithSchema;
-    switch(fieldLayoutType) {
-      case combined:
-        // combined field layout has no core fields
-        final List<Object> noCoreFields = new ArrayList<>();
-        rowWithSchema = encodeParserCombined(metronError.getJSONObject(), noCoreFields);
-        break;
-      case corePlus:
-        // check for reserved name usage
-        final JSONObject jsonObject = metronError.getJSONObject();
-        EncodingUtils.warnIfReservedFieldsAreUsed(jsonObject);
-        rowWithSchema = encodeParserCorePlus(jsonObject, ERROR_INDICATOR_TRUE);
-        break;
-      default:
-        throw new UnsupportedOperationException(
-                String.format("Do not know how to encode fieldLayout type %s", fieldLayoutType.toString()));
-    }
-    return rowWithSchema;
+    return(encodeErrorIntoSparkRow(metronError));
   }
 
   @Override
   public RowWithSchema encodeParserResultIntoSparkRow(@Nullable JSONObject parsedMessage) throws JsonProcessingException {
+    return encodeResultIntoSparkRow(parsedMessage);
+  }
+
+  @Override
+  public RowWithSchema encodeEnrichedMessageIntoSparkRow(@Nullable JSONObject parsedMessage) throws JsonProcessingException {
+    return encodeResultIntoSparkRow(parsedMessage);
+  }
+
+  @Override
+  public RowWithSchema encodeEnrichErrorIntoSparkRow(@NotNull MetronError metronError) {
+    return encodeErrorIntoSparkRow(metronError);
+  }
+
+  /**
+   * Errors are all encoded as a single text field though that is
+   * currently shielded from the user as an implementation detail
+   * @param metronError Error to encode
+   * @return Error encoded into a spark row
+   */
+  protected RowWithSchema encodeErrorIntoSparkRow(@NotNull MetronError metronError) {
+    RowWithSchema rowWithSchema;
+    String error = metronError.getJSONObject().toJSONString();
+    Object value = RowUtils.toRowValue(error, DataTypes.StringType);
+    return new RowWithSchema(errorSchema, value);
+  }
+
+  /**
+   * Encodes the provided JSONObject into a spark row
+   * @param metronMessage Message to encode
+   * @return Spark Row
+   * @throws JsonProcessingException if an encoding error ocurrs
+   */
+  protected RowWithSchema encodeResultIntoSparkRow(@Nullable JSONObject metronMessage) throws JsonProcessingException {
     RowWithSchema rowWithSchema = null;
-    if (parsedMessage != null) {
+    if (metronMessage != null) {
       switch (fieldLayoutType) {
         case combined:
           // combined field layout has no core fields
           final List<Object> noCoreFields = new ArrayList<>();
-          rowWithSchema = encodeParserCombined(parsedMessage, noCoreFields);
+          rowWithSchema = encodeCombined(metronMessage, noCoreFields);
           break;
         case corePlus:
           // check for reserved name usage
-          EncodingUtils.warnIfReservedFieldsAreUsed(parsedMessage);
-          rowWithSchema = encodeParserCorePlus(parsedMessage, ERROR_INDICATOR_FALSE);
+          EncodingUtils.warnIfReservedFieldsAreUsed(metronMessage);
+          rowWithSchema = encodeCorePlus(metronMessage, ERROR_INDICATOR_FALSE);
           break;
         default:
           throw new UnsupportedOperationException(
@@ -287,7 +307,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     return rowWithSchema;
   }
 
-  private RowWithSchema encodeParserCorePlus(@NotNull JSONObject parsedMessage, Object errorInd) throws JsonProcessingException {
+  private RowWithSchema encodeCorePlus(@NotNull JSONObject metronMessage, Object errorInd) throws JsonProcessingException {
     final List<Object> encodedRowValues = new ArrayList<>();
     encodedRowValues.add(VERSION_ONE);
     encodedRowValues.add(errorInd);
@@ -296,30 +316,34 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
       final String fieldName = schemaEntry.getKey();
       final StructField fieldSchema = schemaEntry.getValue();
       // Standard fields are always added to a datasest row, even if they are missing (i.e. null)
-      final Object rowVal = RowUtils.toRowValue(parsedMessage.get(fieldName), fieldSchema.dataType());
+      final Object rowVal = RowUtils.toRowValue(metronMessage.get(fieldName), fieldSchema.dataType());
       encodedRowValues.add(rowVal);
-      parsedMessage.remove(fieldName);
+      metronMessage.remove(fieldName);
     }
 
     // Now that we have encoded the core values, combine encode the rest of the fields in the message
-    return encodeParserCombined(parsedMessage, encodedRowValues);
+    return encodeCombined(metronMessage, encodedRowValues);
   }
 
   @NotNull
-  private RowWithSchema encodeParserCombined(@NotNull JSONObject parsedMessage,
-                                             @NotNull List<Object> existingEncodedValues
+  private RowWithSchema encodeCombined(@NotNull JSONObject metronMessage,
+                                       @NotNull List<Object> existingEncodedValues
   ) throws JsonProcessingException {
     // Any remaining fields are non-standard - encode them into a composite field
-    existingEncodedValues.add(EncodingUtils.encodeCombinedFields(mapper, dataFieldType, parsedMessage));
+    existingEncodedValues.add(EncodingUtils.encodeCombinedFields(mapper, dataFieldType, metronMessage));
 
-    Preconditions.checkState(parsedMessage.size() == existingEncodedValues.size(),
+    Preconditions.checkState(metronMessage.size() == existingEncodedValues.size(),
             "existingEncodedValues.size (%d), does not match parserOutputSparkSchema.size (%d)",
-            existingEncodedValues.size(), parsedMessage.size() );
-    return new RowWithSchema(parserOutputSparkSchema, existingEncodedValues);
+            existingEncodedValues.size(), metronMessage.size() );
+    return new RowWithSchema(outputSparkSchema, existingEncodedValues);
   }
 
   @Override
-  public JSONObject decodeParsedMessage(@NotNull Row row) {
+  public JSONObject decodeParsedMessageFromKafka(@NotNull Row row) {
+
+    //@NotNull final Map<String,Object> metadata = SparkKafkaUtils.extractKafkaMetadata(row);
+    //@NotNull final Map<String,Object> message = SparkKafkaUtils.extractKafkaMessage(row);
+
     return null;
   }
 
@@ -380,7 +404,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
       case avro:
         // write schema out to text file, get path
         // inject path into serializer section
-        Path schemaFilePath = writeOutAvroSchemaFile(AvroUtils.schemaFor(parserOutputSparkSchema));
+        Path schemaFilePath = writeOutAvroSchemaFile(AvroUtils.schemaFor(outputSparkSchema));
         serializerSection = String.format(KafkaAvroOutConfiguration, schemaFilePath.toAbsolutePath().toString());
         break;
       default:

@@ -65,7 +65,6 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
   @NotNull private static final String ZOOKEEPER = "ZookeeperQuorum";
   @NotNull private static final String SERIALISATION_PROVIDER = "SerialisationProvider";
   @NotNull private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
-  @NotNull private static final String SPARK_ROW_ENCODING_COMPOSITE_TYPE = "SparkRowEncodingCompositeFieldType";
   @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
 
   private String zookeeperQuorum = null;
@@ -80,12 +79,9 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
     final String serialisationFactoryName = Objects.requireNonNull(config.getString(SERIALISATION_PROVIDER));
     jsonFactory = (JsonFactory) instantiateClass(serialisationFactoryName);
 
-    final String compositeFieldTypename = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING_COMPOSITE_TYPE));
-    final SparkRowEncodingStrategy.DataFieldType compositeRowType = SparkRowEncodingStrategy.DataFieldType.valueOf(compositeFieldTypename);
-
     final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
-    encodingStrategy.init(jsonFactory,compositeRowType);
+    encodingStrategy.init();
   }
 
   @Override
@@ -114,7 +110,7 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
                 .transformAndConcat(metronSparkPartitionEnricher)
                 .iterator();
       }
-    }, RowEncoder.apply(encodingStrategy.getParserOutputSparkSchema()));
+    }, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
 
     return dst;
   }
