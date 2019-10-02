@@ -246,4 +246,8 @@ public class MetronError {
   public int hashCode() {
     return Objects.hash(message, throwable, sensorTypes, errorType, errorFields, rawMessages, metadata);
   }
+
+  public Set<String> getSensorTypes() {
+    return sensorTypes;
+  }
 }
