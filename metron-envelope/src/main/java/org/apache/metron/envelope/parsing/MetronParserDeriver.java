@@ -29,6 +29,7 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.encoders.RowEncoder;
 import parquet.Preconditions;
 
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
@@ -42,9 +43,11 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   private static final String ALIAS = "metronParserAdapter";
   private static final String ZOOKEEPER = "ZookeeperQuorum";
   private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
+  public static final String KAFKA_BROKERS = "KafkaBrokers";
 
   private String parserName = null;
   private String zookeeperQuorum = null;
+  private String kafkaBrokers = null;
   private SparkRowEncodingStrategy encodingStrategy = null;
 
   @Override
@@ -57,7 +60,7 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
     parserName = Objects.requireNonNull(config.getString("parser-name"), "parser name is required");
-
+    kafkaBrokers = Objects.requireNonNull(config.getString(KAFKA_BROKERS), "KafkaBrokers is required");
     final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
     encodingStrategy.init();
@@ -69,22 +72,26 @@ public class MetronParserDeriver implements Deriver, ProvidesAlias {
     final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
     final String zookeeperQuorum = this.zookeeperQuorum;
+    final String kafkaBrokers = this.kafkaBrokers;
 
     final Dataset<Row> dst = src.mapPartitions(new MapPartitionsFunction<Row, Row>() {
       // The following function gets created from scratch for every spark partition processed
       @Override
       public Iterator<Row> call(Iterator<Row> iterator) throws Exception {
-        final MetronSparkPartitionParser metronSparkPartitionParser = new MetronSparkPartitionParser(zookeeperQuorum, encodingStrategy);
-        metronSparkPartitionParser.init();
-        // we can get away with this as long as the iterator is only used once;
-        // we use iterator transforms so we can stream iterator processing
-        // which means we do not require the entire dataset to be pulled into memory at once
-        // Could we use java 8 streams for this?
-        // If we did, I'm not sure the entire expression would be lazy, best to be sure.
-        return FluentIterable.from(() -> iterator)
-                // transformAndConcat is the guava equivalent of a flatMap
-                .transformAndConcat(metronSparkPartitionParser)
-                .iterator();
+        Iterator<Row> results = Collections.<Row>emptyList().iterator();
+        try(MetronSparkParser metronSparkParser = new MetronSparkParser(zookeeperQuorum, kafkaBrokers, encodingStrategy)) {
+          // we can get away with this as long as the iterator is only used once;
+          // we use iterator transforms so we can stream iterator processing
+          // which means we do not require the entire dataset to be pulled into memory at once
+          // Could we use java 8 streams for this?
+          // If we did, I'm not sure the entire expression would be lazy, best to be sure.
+          results = FluentIterable.from(() -> iterator)
+                  // transformAndConcat is the guava equivalent of a flatMap
+                  .transformAndConcat(metronSparkParser)
+                  .iterator();
+        }
+
+        return results;
       }
     }, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
 

@@ -28,6 +28,7 @@ import org.apache.metron.common.configuration.SensorParserConfig;
 import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.metron.envelope.config.ParserConfigManager;
+import org.apache.metron.envelope.parsing.MetronSparkParser;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -111,7 +112,7 @@ public class MetronConfigLoader implements ConfigLoader, ProvidesAlias {
   // todo: separate error stream to error topic
   @NotNull
   private final Set<String> supportedAdaptorTypes = ImmutableSet.of(
-          org.apache.metron.envelope.parsing.MetronSparkPartitionParser.class.getSimpleName());
+          MetronSparkParser.class.getSimpleName());
 
   @Nullable private String adaptorType;
   @Nullable private String parserName;

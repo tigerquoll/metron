@@ -47,6 +47,7 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -202,7 +203,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
         index = Collections.emptyMap();
         break;
       case corePlus:
-        // core pluss has a number of fields separate from the combined field
+        // core plus has a number of fields separate from the combined field
         index = Arrays.stream(parserOutputSparkSchema.fields())
                 .filter(x -> !reservedFieldNames.contains(x.name()))
                 .collect(Collectors.toMap(StructField::name, Function.identity()));
@@ -273,7 +274,6 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
    * @return Error encoded into a spark row
    */
   protected RowWithSchema encodeErrorIntoSparkRow(@NotNull MetronError metronError) {
-    RowWithSchema rowWithSchema;
     String error = metronError.getJSONObject().toJSONString();
     Object value = RowUtils.toRowValue(error, DataTypes.StringType);
     return new RowWithSchema(errorSchema, value);
@@ -297,7 +297,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
         case corePlus:
           // check for reserved name usage
           EncodingUtils.warnIfReservedFieldsAreUsed(metronMessage);
-          rowWithSchema = encodeCorePlus(metronMessage, ERROR_INDICATOR_FALSE);
+          rowWithSchema = encodeCorePlus(metronMessage);
           break;
         default:
           throw new UnsupportedOperationException(
@@ -307,10 +307,9 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     return rowWithSchema;
   }
 
-  private RowWithSchema encodeCorePlus(@NotNull JSONObject metronMessage, Object errorInd) throws JsonProcessingException {
+  private RowWithSchema encodeCorePlus(@NotNull JSONObject metronMessage) throws JsonProcessingException {
     final List<Object> encodedRowValues = new ArrayList<>();
     encodedRowValues.add(VERSION_ONE);
-    encodedRowValues.add(errorInd);
     // Add standard field values (add null if they are not present)
     for(Map.Entry<String, StructField> schemaEntry: schemaIndex.entrySet()) {
       final String fieldName = schemaEntry.getKey();

@@ -20,7 +20,6 @@ package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.component.ProvidesAlias;
 import com.cloudera.labs.envelope.derive.Deriver;
-import com.fasterxml.jackson.core.JsonFactory;
 import com.google.common.collect.Iterables;
 import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.collect.FluentIterable;
@@ -36,6 +35,7 @@ import org.apache.spark.sql.catalyst.encoders.RowEncoder;
 import org.jetbrains.annotations.NotNull;
 import parquet.Preconditions;
 
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
@@ -63,22 +63,19 @@ import static org.apache.metron.envelope.utils.ClassUtils.instantiateClass;
 public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
   @NotNull private static final String ALIAS = "MetronParser";
   @NotNull private static final String ZOOKEEPER = "ZookeeperQuorum";
-  @NotNull private static final String SERIALISATION_PROVIDER = "SerialisationProvider";
+  @NotNull public static final String KAFKA_BROKERS = "KafkaBrokers";
   @NotNull private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
   @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronEnrichmentDeriver.class);
 
   private String zookeeperQuorum = null;
-  private JsonFactory jsonFactory = null;
   private SparkRowEncodingStrategy encodingStrategy = null;
+  private String kafkaBrokers;
 
   @Override
   // envelope configuration
   public void configure(Config config) {
     zookeeperQuorum = Objects.requireNonNull(config.getString(ZOOKEEPER), "Zookeeper quorum is required");
-
-    final String serialisationFactoryName = Objects.requireNonNull(config.getString(SERIALISATION_PROVIDER));
-    jsonFactory = (JsonFactory) instantiateClass(serialisationFactoryName);
-
+    kafkaBrokers = Objects.requireNonNull(config.getString(KAFKA_BROKERS), "KafkaBrokers is required");
     final String rowEncodingStrategy  = Objects.requireNonNull(config.getString(SPARK_ROW_ENCODING));
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
     encodingStrategy.init();
@@ -95,40 +92,26 @@ public class MetronEnrichmentDeriver implements Deriver, ProvidesAlias {
     final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
     final String zookeeperQuorum = this.zookeeperQuorum;
+    final String kafkaBrokers = this.kafkaBrokers;
 
     final Dataset<Row> dst = src.mapPartitions(new MapPartitionsFunction<Row, Row>() {
       // The following function gets created from scratch for every spark partition processed
       @Override
       public Iterator<Row> call(Iterator<Row> iterator) throws Exception {
-        final MetronSparkPartitionEnricher metronSparkPartitionEnricher = new MetronSparkPartitionEnricher(zookeeperQuorum, encodingStrategy);
-        metronSparkPartitionEnricher.init();
-        // we can get away with this as long as the iterator is only used once;
-        // we use iterator transforms so we can stream iterator processing
-        // which means we do not require the entire dataset to be pulled into memory at once
-        return FluentIterable.from(() -> iterator)
-                // transformAndConcat is the guava equivalent of a flatmap
-                .transformAndConcat(metronSparkPartitionEnricher)
-                .iterator();
+        Iterator<Row> results = Collections.<Row>emptyList().iterator();
+        try(MetronSparkEnricher metronSparkEnricher = new MetronSparkEnricher(zookeeperQuorum, kafkaBrokers, encodingStrategy)) {
+          // we can get away with this as long as the iterator is only used once;
+          // we use iterator transforms so we can stream iterator processing
+          // which means we do not require the entire dataset to be pulled into memory at once
+          results = FluentIterable.from(() -> iterator)
+                  // transformAndConcat is the guava equivalent of a flatMap
+                  .transformAndConcat(metronSparkEnricher)
+                  .iterator();
+        }
+        return results;
       }
     }, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
 
     return dst;
   }
-
-/*
-  // Made protected to allow for error testing in integration test. Directly flaws inputs while everything is functioning hits other
-  // errors, so this is made available in order to ensure ERROR_STREAM is output properly.
-  protected void handleError(String key, JSONObject rawMessage, String subGroup, JSONObject enrichedMessage, Exception e) {
-    LOG.error("[Metron] Unable to enrich message: {}", rawMessage, e);
-    if (key != null) {
-      collector.emit(enrichmentType, new Values(key, enrichedMessage, subGroup));
-    }
-    MetronError error = new MetronError()
-            .withErrorType(Constants.ErrorType.ENRICHMENT_ERROR)
-            .withThrowable(e)
-            .addRawMessage(rawMessage);
-    StormErrorUtils.handleError(collector, error);
-  }
- */
-
 }

@@ -24,9 +24,4 @@ public class MetronErrorHandlerImpl implements MetronErrorHandler {
   public void handleError(MetronError error) {
     kafkaProducer.send( new ProducerRecord<>(errorTopic,error.getJSONObject().toJSONString()));
   }
-
-  @Override
-  public void flush() {
-    kafkaProducer.flush();
-  }
 }

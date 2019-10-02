@@ -1,12 +1,9 @@
 package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
-import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import envelope.shaded.com.google.common.base.Preconditions;
-import envelope.shaded.com.google.common.base.Supplier;
-import org.apache.curator.framework.CuratorFramework;
 import org.apache.metron.common.Constants;
 import org.apache.metron.common.configuration.enrichment.SensorEnrichmentConfig;
 import org.apache.metron.common.error.MetronError;
@@ -21,7 +18,7 @@ import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.EnrichmentConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.metron.envelope.utils.Either;
-import org.apache.metron.envelope.utils.MetronErrorHandler;
+import org.apache.metron.envelope.utils.MetronErrorProcessor;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
 import org.apache.spark.sql.Row;
@@ -37,25 +34,28 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.metron.envelope.utils.ErrorUtils.ErrorInfo;
 import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
-import static org.apache.metron.envelope.utils.ErrorUtils.catchErrorsAndNullsWithCause;
-import static org.apache.metron.envelope.utils.MetronErrorUtils.convertErrorsToMetronErrors;
+import static org.apache.metron.envelope.utils.ErrorUtils.convertErrorsToMetronErrors;
+import static org.apache.metron.envelope.utils.ErrorUtils.convertSparkErrorsToMetronErrors;
 
-public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>>{
+public class MetronSparkEnricher implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>>,
+AutoCloseable {
   public static class Perf {} // used for performance logging
-  private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronSparkPartitionEnricher.class);
+  private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronSparkEnricher.class);
+  private static volatile Context stellarContext;
+  private static volatile EnrichmentConfigManager enrichmentConfigManager;
+
   private PerformanceLogger perfLog; // not static bc multiple bolts may exist in same worker
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
-  @NotNull private EnrichmentConfigManager enrichmentConfigManager;
-  @NotNull private static ConcurrentHashMap<String, LoadingCache<CacheKey, JSONObject>> cacheMap
-          = new ConcurrentHashMap<>();
-  @NotNull private MetronErrorHandler metronErrorHandler;
-  private Context stellarContext;
+  @NotNull private String kafkaBrokers;
+  @NotNull private static ConcurrentHashMap<String, LoadingCache<CacheKey, JSONObject>> cacheMap = new ConcurrentHashMap<>();
+  private MetronErrorProcessor metronErrorProcessor;
+
   private String enrichmentType;
   private EnrichmentAdapter<CacheKey> adapter;
   private transient LoadingCache<CacheKey, JSONObject> cache;
@@ -63,31 +63,44 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
   private Long maxTimeRetain;
   private boolean invalidateCacheOnReload = false;
 
+  private static synchronized void initStellarContext(String zookeeperQuorum, EnrichmentConfigManager enrichmentConfigManager) {
+    Context tmpStellarContext = new Context.Builder()
+            .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
+            .with(Context.Capabilities.GLOBAL_CONFIG, () -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
+            .with(Context.Capabilities.STELLAR_CONFIG,() -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
+            .build();
+    StellarFunctions.initialize(tmpStellarContext);
+    stellarContext = tmpStellarContext;
+  }
+
+  private static synchronized void initEnrichmentConfigManager(String zookeeperQuorum) {
+    EnrichmentConfigManager tmpEnrichmentConfigManager = new EnrichmentConfigManager(
+            Objects.requireNonNull(zookeeperQuorum)
+    );
+    tmpEnrichmentConfigManager.init();
+    enrichmentConfigManager = tmpEnrichmentConfigManager;
+  }
+
   /**
    * This object gets reconstructed for every partition of data,
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    * @param rowEncodingStrategy row encoder to use
-   * @param metronErrorHandler Handles any processing errors
+   * @param kafkaBrokers Handles any processing errors
    */
-  public MetronSparkPartitionEnricher(String zookeeperQuorum,
-                                      SparkRowEncodingStrategy rowEncodingStrategy,
-                                      MetronErrorHandler metronErrorHandler) {
+  MetronSparkEnricher(@NotNull String zookeeperQuorum,
+                      @NotNull String kafkaBrokers,
+                      @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
     this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
-    this.enrichmentConfigManager = new EnrichmentConfigManager(
-            Objects.requireNonNull(zookeeperQuorum)
-    );
-    this.metronErrorHandler = Objects.requireNonNull(metronErrorHandler);
-  }
+    this.kafkaBrokers = Objects.requireNonNull(kafkaBrokers);
 
-  /**
-   * Prepares the object for processing
-   */
-  public void init() throws Exception {
-    CuratorFramework curatorFramework = ZookeeperClient.getZKInstance(zookeeperQuorum);
+    if (enrichmentConfigManager == null) {
+      initEnrichmentConfigManager(zookeeperQuorum);
+    }
 
-    enrichmentConfigManager.init();
+    metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers, null);
+
     if (this.maxCacheSize == null)
       throw new IllegalStateException("MAX_CACHE_SIZE_OBJECTS_NUM must be specified");
     if (this.maxTimeRetain == null)
@@ -104,7 +117,7 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
     // operations over multiple spark partitions
     if (invalidateCacheOnReload) {
       // Force creation of a new cache
-      cache = cacheMap.compute(enrichmentType, (k,existingCache) -> {
+      cache = cacheMap.compute(enrichmentType, (k, existingCache) -> {
         if (existingCache != null) existingCache.cleanUp();
         return cacheSupplier.get();
       });
@@ -119,15 +132,24 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
       throw new IllegalStateException("Could not initialize enrichment adapter...");
     }
     perfLog = new PerformanceLogger(() -> enrichmentConfigManager.getConfigurations().getGlobalConfig(),
-            MetronSparkPartitionEnricher.Perf.class.getName());
-    initializeStellar();
+            MetronSparkEnricher.Perf.class.getName());
+
+    if (stellarContext == null) {
+      initStellarContext(zookeeperQuorum, enrichmentConfigManager);
+    }
+  }
+
+
+  @Override
+  public void close() throws Exception {
+    metronErrorProcessor.close();
   }
 
   /**
    * @param enrichment enrichment
    * @return Instance of this class
    */
-  public MetronSparkPartitionEnricher withEnrichment(Enrichment enrichment) {
+  public MetronSparkEnricher withEnrichment(Enrichment enrichment) {
     this.enrichmentType = enrichment.getType();
     this.adapter = enrichment.getAdapter();
     return this;
@@ -137,7 +159,7 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * @param maxCacheSize Maximum size of cache before flushing
    * @return Instance of this class
    */
-  public MetronSparkPartitionEnricher withMaxCacheSize(long maxCacheSize) {
+  public MetronSparkEnricher withMaxCacheSize(long maxCacheSize) {
     this.maxCacheSize = maxCacheSize;
     return this;
   }
@@ -146,23 +168,14 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
    * @param maxTimeRetain Maximum time to retain cached entry before expiring
    * @return Instance of this class
    */
-  public MetronSparkPartitionEnricher withMaxTimeRetain(long maxTimeRetain) {
+  public MetronSparkEnricher withMaxTimeRetain(long maxTimeRetain) {
     this.maxTimeRetain = maxTimeRetain;
     return this;
   }
 
-  public MetronSparkPartitionEnricher withCacheInvalidationOnReload(boolean cacheInvalidationOnReload) {
+  public MetronSparkEnricher withCacheInvalidationOnReload(boolean cacheInvalidationOnReload) {
     this.invalidateCacheOnReload= cacheInvalidationOnReload;
     return this;
-  }
-
-  protected void initializeStellar() {
-    stellarContext = new Context.Builder()
-            .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
-            .with(Context.Capabilities.GLOBAL_CONFIG, () -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
-            .with(Context.Capabilities.STELLAR_CONFIG,() -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
-            .build();
-    StellarFunctions.initialize(stellarContext);
   }
 
   /**
@@ -182,35 +195,35 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
 
     // Deserialise message from spark row
     Stream<Either<MetronError, JSONObject>> deSerialisedMessages = Stream.of(row)
-            .map(convertErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
+            .map(convertSparkErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
                     x -> encodingStrategy.decodeParsedMessageFromKafka(x)));
 
     // enrich message with configured enrichment
     Stream<Either<MetronError, JSONObject>> enrichedMessages = deSerialisedMessages
-            .flatMap(Either::getData)
+            .flatMap(Either::getDataStream) // filters out decode errors and converts to JSONObjects
             .flatMap(this::enrichMessage);
 
     // Serialise message back into spark row
     Stream<Either<MetronError, RowWithSchema>> serialisedMessages = enrichedMessages
-            .flatMap(Either::getData)
+            .flatMap(Either::getDataStream) // filters out enrich errors and converts to RowWithSchema
             .map(convertErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
                     x -> encodingStrategy.encodeEnrichedMessageIntoSparkRow(x)));
 
     // handle any errors that occurred during the previous 3 steps
     Stream.of(
-            deSerialisedMessages.flatMap(Either::getErrors),
-            enrichedMessages.flatMap(Either::getErrors),
-            serialisedMessages.flatMap(Either::getErrors)
+            deSerialisedMessages.flatMap(Either::getErrorStream), // filters for and extracts MetronErrors
+            enrichedMessages.flatMap(Either::getErrorStream), // filters for and extracts MetronErrors
+            serialisedMessages.flatMap(Either::getErrorStream) // filters for and extracts MetronErrors
             )
             .flatMap(Function.identity()) // flatten to a simple stream of MetronErrors
             .forEach( err -> {
               LOG.warn("Error occurred during enriching: {}", err.getJSONObject().toJSONString());
-              metronErrorHandler.handleError(err);
+              metronErrorProcessor.handleMetronError(err);
             });
 
     // return all successfully enriched, serialised messages back to caller
     return serialisedMessages
-            .flatMap(Either::getData)
+            .flatMap(Either::getDataStream)  // filters for and extracts Spark Rows
             .collect(Collectors.toList());
   }
 
@@ -244,10 +257,10 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
           if (value != null) {
             if(config == null) {
               LOG.debug("Unable to find SensorEnrichmentConfig for sourceType: {}", sourceType);
-              MetronError metronError = new MetronError()
+              errors.add(new MetronError()
                       .withErrorType(Constants.ErrorType.ENRICHMENT_ERROR)
                       .withMessage("Unable to find SensorEnrichmentConfig for sourceType: " + sourceType)
-                      .addRawMessage(rawMessage);
+                      .addRawMessage(rawMessage));
               continue;
             }
             config.getConfiguration().putIfAbsent(STELLAR_CONTEXT_CONF, stellarContext);
@@ -287,11 +300,11 @@ public class MetronSparkPartitionEnricher implements envelope.shaded.com.google.
               .addRawMessage(rawMessage));
     }
     perfLog.log("execute", "key={}, elapsed time to run execute", key);
-    Preconditions.checkState(enrichedMessage != null);
 
     return Stream.concat(
-            errors.stream().map(Either::Error),
-            Stream.of(Either.Result(enrichedMessage)));
+            Stream.of(enrichedMessage).map(Either::Data),  // Wrap enriched message in an 'Either' Struct
+            errors.stream().map(Either::Error) // Wrap MetronErrors in 'Either' Structs
+    );
   }
 
 }

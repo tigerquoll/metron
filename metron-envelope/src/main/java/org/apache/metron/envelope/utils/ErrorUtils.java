@@ -2,9 +2,12 @@ package org.apache.metron.envelope.utils;
 
 import org.apache.metron.common.Constants;
 import org.apache.metron.common.error.MetronError;
+import org.apache.spark.sql.Row;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.json.simple.JSONObject;
 
+import java.util.Collections;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -116,7 +119,7 @@ public class ErrorUtils {
   public static <T,R> Function<T, Either<Exception,R>> catchErrorsAndNulls(@NotNull ThrowingFunction<T,R> function) {
     return t -> {
       try {
-        return Either.Result(Objects.requireNonNull(function.apply(t)));
+        return Either.Data(Objects.requireNonNull(function.apply(t)));
       } catch (Exception ex) {
         return Either.Error(ex);
       }
@@ -158,7 +161,7 @@ public class ErrorUtils {
   public static <T,R> Function<T, Either<ErrorInfo<Exception,T>,R>> catchErrorsAndNullsWithCause(@NotNull ThrowingFunction<T,R> function) {
     return t -> {
       try {
-        return Either.Result(Objects.requireNonNull(function.apply(t)));
+        return Either.Data(Objects.requireNonNull(function.apply(t)));
       } catch (Exception ex) {
         return Either.Error(ErrorInfo.of(ex,t));
       }
@@ -166,6 +169,52 @@ public class ErrorUtils {
   }
 
 
+  /**
+   * Mapping Function specialised to deal with JSONObjects and MetronErrors
+   * @param MetronErrorType If exceptions are thrown, what MetronErrorType should they be mapped to
+   * @param function Function that processes JSONObject
+   * @param <T> Mapping function takes this as input
+   * @param <R> Mapping function returns this as output
+   * @return  Either<MetronError, R>
+   */
+  public static <T extends JSONObject,R> Function<T, Either<MetronError, R>> convertErrorsToMetronErrors(
+          @NotNull Constants.ErrorType MetronErrorType,
+          @NotNull ErrorUtils.ThrowingFunction<T,R> function) {
+    return t -> {
+      try {
+        return Either.Data(Objects.requireNonNull(function.apply(t)));
+      } catch (Exception ex) {
+        String sensor = t.getOrDefault(Constants.SENSOR_TYPE, Constants.ERROR_TYPE).toString();
+        return Either.Error(new MetronError()
+                .withErrorType(MetronErrorType)
+                .withThrowable(ex)
+                .withSensorType(Collections.singleton(sensor))
+                .withMessage(String.format("Field values: %s", t.toJSONString())));
+      }
+    };
+  }
 
+  /**
+   * Mapping Function specialised to deal with JSONObjects and MetronErrors
+   * @param MetronErrorType If exceptions are thrown, what MetronErrorType should they be mapped to
+   * @param function Function that processes JSONObject
+   * @param <T> Mapping function takes this as input
+   * @param <R> Mapping function returns this as output
+   * @return  Either<MetronError, R>
+   */
+  public static <T extends Row,R> Function<T, Either<MetronError, R>> convertSparkErrorsToMetronErrors(
+          @NotNull Constants.ErrorType MetronErrorType,
+          @NotNull ErrorUtils.ThrowingFunction<T,R> function) {
+    return t -> {
+      try {
+        return Either.Data(Objects.requireNonNull(function.apply(t)));
+      } catch (Exception ex) {
+        return Either.Error(new MetronError()
+                .withErrorType(MetronErrorType)
+                .withThrowable(ex)
+                .withSensorType(Collections.singleton(Constants.ERROR_TYPE))
+                .withMessage(String.format("Field values: %s", t.toString())));
+      }
+    };
   }
 }

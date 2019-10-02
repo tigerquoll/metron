@@ -13,26 +13,26 @@ import java.util.stream.Stream;
  * A value that contains either a result value or an error value
  * These are immutable classes, sub-classes are used for Error and Success
  * @param <E> Type of error
- * @param <R> Type of result
+ * @param <D> Type of result
  */
-public abstract class Either<E, R> {
+public abstract class Either<E, D> {
   @NotNull
-  public static <E, R> Either<E, R> NullableError(@Nullable E value) {
+  public static <E, D> Either<E, D> NullableError(@Nullable E value) {
     return new NullableError<>(value);
   }
 
   @NotNull
-  public static <E, R> Either<E, R> NullableResult(@Nullable R value) {
+  public static <E, D> Either<E, D> NullableResult(@Nullable D value) {
     return new NullableResult<>(value);
   }
 
   @NotNull
-  public static <E, R> Either<E, R> Error(@NotNull E value) {
+  public static <E, D> Either<E, D> Error(@NotNull E value) {
     return new Error<>(value);
   }
 
   @NotNull
-  public static <E, R> Either<E, R> Result(@NotNull R value) {
+  public static <E, D> Either<E, D> Data(@NotNull D value) {
     return new Result<>(value);
   }
 
@@ -40,13 +40,13 @@ public abstract class Either<E, R> {
 
   public abstract boolean isError();
 
-  public abstract boolean isResult();
+  public abstract boolean isData();
 
   @Nullable
   public abstract E error();
 
   @Nullable
-  public abstract R result();
+  public abstract D data();
 
   @Nullable
   public abstract E errorGetOrElse(@Nullable E elseValue);
@@ -55,7 +55,7 @@ public abstract class Either<E, R> {
   public abstract Optional<E> errorToOption();
 
   @NotNull
-  public abstract Stream<E> getErrors();
+  public abstract Stream<E> getErrorStream();
 
   @NotNull
   public abstract <T> Optional <T> errorMap(@NotNull Function <? super E,T> mapper);
@@ -63,28 +63,28 @@ public abstract class Either<E, R> {
   public abstract void errorForEach(@NotNull Consumer <E> action);
 
   @Nullable
-  public abstract R getOrElse(@Nullable R elseValue);
+  public abstract D getOrElse(@Nullable D elseValue);
 
   @NotNull
-  public abstract Optional<R> getOption();
+  public abstract Optional<D> getOption();
 
   @NotNull
-  public abstract Stream<R> getData();
+  public abstract Stream<D> getDataStream();
 
   @NotNull
-  public abstract <T> Optional <T> map(@NotNull Function<? super R,T> mapper) ;
+  public abstract <T> Optional <T> map(@NotNull Function<? super D,T> mapper) ;
 
-  public abstract void forEach(@NotNull Consumer<R> action);
+  public abstract void forEach(@NotNull Consumer<D> action);
 
   /**
    * A Result value that may be null
    * @param <E> Error Type
-   * @param <R> Result TYpe
+   * @param <D> Result TYpe
    */
-  private static class NullableResult<E,R> extends Either<E,R> {
-    final R resultVal;
+  private static class NullableResult<E, D> extends Either<E, D> {
+    final D resultVal;
 
-    NullableResult(@Nullable R result) {
+    NullableResult(@Nullable D result) {
       this.resultVal = result;
     }
 
@@ -94,7 +94,7 @@ public abstract class Either<E, R> {
     }
 
     @Override
-    public boolean isResult() {
+    public boolean isData() {
       return true;
     }
 
@@ -106,7 +106,7 @@ public abstract class Either<E, R> {
 
     @Override
     @Nullable
-    public R result() {
+    public D data() {
       return resultVal;
     }
 
@@ -124,7 +124,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<E> getErrors() {
+    public Stream<E> getErrorStream() {
       return Stream.empty();
     }
 
@@ -140,30 +140,30 @@ public abstract class Either<E, R> {
 
     @Override
     @Nullable
-    public R getOrElse(@Nullable R elseValue) {
+    public D getOrElse(@Nullable D elseValue) {
       return resultVal;
     }
 
     @Override
     @NotNull
-    public Optional<R> getOption() {
+    public Optional<D> getOption() {
       return Optional.ofNullable(resultVal);
     }
 
     @Override
     @NotNull
-    public Stream<R> getData() {
+    public Stream<D> getDataStream() {
       return Stream.of(resultVal);
     }
 
     @Override
     @NotNull
-    public <T> Optional<T> map(@NotNull Function<? super R, T> mapper) {
+    public <T> Optional<T> map(@NotNull Function<? super D, T> mapper) {
       return Optional.ofNullable(mapper.apply(resultVal));
     }
 
     @Override
-    public void forEach(@NotNull Consumer<R> action) {
+    public void forEach(@NotNull Consumer<D> action) {
       action.accept(resultVal);
     }
 
@@ -191,22 +191,22 @@ public abstract class Either<E, R> {
   /**
    * A result value that cannot be null
    * @param <E> Error Type
-   * @param <R> Result Type
+   * @param <D> Result Type
    */
-  private static class Result<E,R> extends NullableResult<E,R> {
-    Result(@NotNull R result) {
+  private static class Result<E, D> extends NullableResult<E, D> {
+    Result(@NotNull D result) {
       super(result);
     }
 
     @Override
     @NotNull
-    public R result() {
+    public D data() {
       return Objects.requireNonNull(resultVal);
     }
 
     @Override
     @NotNull
-    public R getOrElse(@Nullable R elseValue) {
+    public D getOrElse(@Nullable D elseValue) {
       return Objects.requireNonNull(resultVal);
     }
 
@@ -221,9 +221,9 @@ public abstract class Either<E, R> {
   /**
    * An Error Value that can be null
    * @param <E> Error Type
-   * @param <R> Result Type
+   * @param <D> Result Type
    */
-  private static class NullableError<E,R> extends Either<E,R> {
+  private static class NullableError<E, D> extends Either<E, D> {
     final E errorVal;
 
     NullableError(@Nullable E error) {
@@ -234,7 +234,7 @@ public abstract class Either<E, R> {
     public boolean isError() {return true;}
 
     @Override
-    public boolean isResult() {return false;}
+    public boolean isData() {return false;}
 
     @Override
     @Nullable
@@ -244,7 +244,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public R result() {
+    public D data() {
       throw new IllegalStateException("Attempting to extract result from an error");
     }
 
@@ -262,7 +262,7 @@ public abstract class Either<E, R> {
 
     @Override
     @NotNull
-    public Stream<E> getErrors() {
+    public Stream<E> getErrorStream() {
       return Stream.of(errorVal);
     }
 
@@ -279,30 +279,30 @@ public abstract class Either<E, R> {
 
     @Override
     @Nullable
-    public R getOrElse(@Nullable R elseValue){
+    public D getOrElse(@Nullable D elseValue){
       return elseValue;
     }
 
     @Override
     @NotNull
-    public Optional<R> getOption() {
+    public Optional<D> getOption() {
       return Optional.empty();
     }
 
     @Override
     @NotNull
-    public Stream<R> getData() {
+    public Stream<D> getDataStream() {
       return Stream.empty();
     }
 
     @Override
     @NotNull
-    public <T> Optional<T> map(@NotNull Function<? super R,T> mapper) {
+    public <T> Optional<T> map(@NotNull Function<? super D,T> mapper) {
       return Optional.empty();
     }
 
     @Override
-    public void forEach(@NotNull Consumer<R> action) {
+    public void forEach(@NotNull Consumer<D> action) {
     }
 
     @Override
@@ -329,9 +329,9 @@ public abstract class Either<E, R> {
   /**
    * An error Value that cannot be null
    * @param <E> Error TYpe
-   * @param <R> Result Type
+   * @param <D> Result Type
    */
-  private static class Error<E,R> extends NullableError<E,R> {
+  private static class Error<E, D> extends NullableError<E, D> {
     Error(@NotNull E error) {
       super(error);
     }

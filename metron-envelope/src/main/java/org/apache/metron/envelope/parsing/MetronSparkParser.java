@@ -20,9 +20,6 @@ package org.apache.metron.envelope.parsing;
 import com.cloudera.labs.envelope.spark.RowWithSchema;
 import com.cloudera.labs.envelope.translate.Translator;
 import com.github.benmanes.caffeine.cache.Cache;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.metron.common.Constants;
 import org.apache.metron.common.configuration.SensorParserConfig;
 import org.apache.metron.common.error.MetronError;
@@ -35,8 +32,7 @@ import org.apache.metron.envelope.utils.Either;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.ParserConfigManager;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
-import org.apache.metron.envelope.utils.MetronErrorHandler;
-import org.apache.metron.envelope.utils.MetronErrorHandlerImpl;
+import org.apache.metron.envelope.utils.MetronErrorProcessor;
 import org.apache.metron.envelope.utils.SparkKafkaUtils;
 import org.apache.metron.parsers.ParserRunner;
 import org.apache.metron.parsers.ParserRunnerImpl;
@@ -56,89 +52,106 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.metron.envelope.utils.MetronErrorUtils.convertErrorsToMetronErrors;
+import static org.apache.metron.envelope.utils.ErrorUtils.convertErrorsToMetronErrors;
 import static org.apache.metron.envelope.utils.SparkKafkaUtils.ENVELOPE_KAFKA_TOPICNAME_FIELD;
 
 /**
  * Responsible for Initialising and running metron parsers over a a spark partition's worth of incoming data from Kafka.
  * This class assumes that data is incoming via Kafka, c.f. extractMetadata() for the implementation of that assumption
  */
-public class MetronSparkPartitionParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>> {
-  @NotNull public static final String UNKNOWN = "Unknown";
-  public static final String METRON_SPARK_PARSER_ERROR_REPORTER = "Metron Spark Parser Error Reporter";
-  @NotNull private static LazyLogger LOGGER = LazyLoggerFactory.getLogger(MetronSparkPartitionParser.class);
+public class MetronSparkParser implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>>,
+AutoCloseable {
+  @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronSparkParser.class);
+  // Made static so it does not need to be recreated for every spark partition processed
+  private static volatile ParserConfigManager parserConfigManager;
+  // Made static so it does not need to be recreated for every spark partition processed
+  private static volatile Context stellarContext;
 
-  @NotNull private ParserConfigManager parserConfigManager;
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
-  @NotNull private MetronErrorHandler metronErrorHandler;
   @NotNull private String kafkaBrokers;
 
+  private MetronErrorProcessor metronErrorProcessor;
   private ParserRunner<JSONObject> envelopeParserRunner;
   private Map<String, String> topicToSensorMap;
 
-  // Map between SensorType and the relevant errorHandling logic
-  private Map<String, MetronErrorHandler> metronErrorHandlers = null;
-
-  // Kafka Producer for handling errors
-  private static volatile KafkaProducer<String,String> metronErrorKafkaProducer;
-
-  static void initMetronErrorKafkaProducer(String kafkaBrokers) {
-    synchronized (MetronSparkPartitionParser.class) {
-      if (metronErrorKafkaProducer != null) {
-        Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers);
-        props.put(ProducerConfig.CLIENT_ID_CONFIG, METRON_SPARK_PARSER_ERROR_REPORTER);
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        metronErrorKafkaProducer = new KafkaProducer<>(props);
-      }
+  /**
+   * Parser config is kept static to prevent zookeeper clients having to be re-created for each partition
+   * @param zookeeperQuorum Source of configuration information
+   */
+  static synchronized void initParserConfigManager(String zookeeperQuorum) {
+    if (parserConfigManager != null) {
+      parserConfigManager = new ParserConfigManager(zookeeperQuorum);
     }
+    return;
   }
 
+  /**
+   * Initialises Stellar Context
+   * @param sensorTypes The different sensor types stellar may encounter
+   * @param zookeeperQuorum Source of configuration info for stellar
+   * @param parserConfigManager Source of configuration info for stellar
+   */
+  @NotNull
+  private static synchronized void initStellarContext(@NotNull final List<String> sensorTypes, String zookeeperQuorum,
+                                                      ParserConfigManager parserConfigManager) {
+    Map<String, Object> cacheConfig = new HashMap<>();
+    for (String sensorType : sensorTypes) {
+      SensorParserConfig config = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
+      if (config != null) {
+        cacheConfig.putAll(config.getCacheConfig());
+      }
+    }
+    Cache<CachingStellarProcessor.Key, Object> cache = CachingStellarProcessor.createCache(cacheConfig);
+
+    Context.Builder builder = new Context.Builder()
+            .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
+            .with(Context.Capabilities.GLOBAL_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig())
+            .with(Context.Capabilities.STELLAR_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig());
+    if (cache != null) {
+      builder = builder.with(Context.Capabilities.CACHE, () -> cache);
+    }
+    Context tmpStellarContext = builder.build();
+    StellarFunctions.initialize(tmpStellarContext);
+    stellarContext = tmpStellarContext;
+    return;
+  }
   /**
    * This object gets reconstructed for every partition of data,
    * so it re-reads its configuration fresh from zookeeper
    * @param zookeeperQuorum Zookeeper address of configuration
    */
-  MetronSparkPartitionParser(@NotNull String zookeeperQuorum,
-                             @NotNull String kafkaBrokers,
-                             @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
+  MetronSparkParser(@NotNull String zookeeperQuorum,
+                    @NotNull String kafkaBrokers,
+                    @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
     this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
     this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
     this.kafkaBrokers = Objects.requireNonNull(kafkaBrokers);
-  }
 
-  /**
-   * Prepares the object for processing
-   * @throws Exception on error
-   */
-  public void init() throws Exception {
-    parserConfigManager = new ParserConfigManager(zookeeperQuorum);
-    if (metronErrorKafkaProducer == null) {
-      initMetronErrorKafkaProducer(kafkaBrokers);
+    if (parserConfigManager == null) {
+      initParserConfigManager(zookeeperQuorum);
     }
 
+    metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers, parserConfigManager);
     @NotNull final List<String> sensorTypes = parserConfigManager.getConfigurations().getTypes();
-    metronErrorHandlers = createSensorTypeToErrorHandler(sensorTypes);
+
+    if (stellarContext == null) {
+      initStellarContext(sensorTypes,zookeeperQuorum,parserConfigManager);
+    }
+
     topicToSensorMap = createTopicToSensorMap(sensorTypes);
     envelopeParserRunner = new ParserRunnerImpl(new HashSet<>(sensorTypes));
-    envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), initializeStellar(sensorTypes));
+    envelopeParserRunner.init(() -> parserConfigManager.getConfigurations(), stellarContext);
   }
 
-  private Map<String, MetronErrorHandler> createSensorTypeToErrorHandler(@NotNull List<String> sensorTypes) {
-    return sensorTypes.stream()
-            .collect(Collectors.toMap(
-                    sensor -> sensor,
-                    sensor -> new MetronErrorHandlerImpl(metronErrorKafkaProducer,
-                            parserConfigManager.getConfigurations().getSensorParserConfig(sensor).getErrorTopic())));
+  @Override
+  public void close() throws Exception {
+    metronErrorProcessor.close();
   }
-
 
   /**
    * Used to map incoming data to the processing configured for all data coming from that sensor
@@ -210,7 +223,7 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     @NotNull final Stream<Either<MetronError, RowWithSchema>> encodedMessages =
             runnerResults.getMessages().stream()
                     .filter( x -> {
-                      if (x == null) LOGGER.warn("Parsing produced a null message - ignoring");
+                      if (x == null) LOG.warn("Parsing produced a null message - ignoring");
                       return x != null;
                     })
                     .map(convertErrorsToMetronErrors(Constants.ErrorType.PARSER_ERROR,
@@ -219,48 +232,22 @@ public class MetronSparkPartitionParser implements envelope.shaded.com.google.co
     // report any errors
     Stream.of(
             runnerResults.getErrors().stream(),
-            encodedMessages.flatMap(Either::getErrors)
+            encodedMessages.flatMap(Either::getErrorStream)
     )
     .flatMap(Function.identity()) // flatten to a simple stream of MetronErrors
     .forEach(err -> {
-            LOGGER.error("Error parsing message {}", err.getJSONObject());
-            metronErrorHandler.handleError(err);
+              LOG.error("Error parsing message {}", err.getJSONObject());
+              metronErrorProcessor.handleMetronError(err);
             }
     );
 
     // return an iterable of our results
     return encodedMessages
-            .flatMap(Either::getData)
+            .flatMap(Either::getDataStream) // filters for and extracts data from the 'Either<>' struct
             .collect(Collectors.toList());
   }
 
-  /**
-   * Initialises Stellar Context
-   * @param sensorTypes The different sensor types stellar may encounter
-   * @return Stellar Context
-   */
-  @NotNull
-  private Context initializeStellar(@NotNull final List<String> sensorTypes) {
-    Map<String, Object> cacheConfig = new HashMap<>();
-    for (String sensorType : sensorTypes) {
-      SensorParserConfig config = parserConfigManager.getConfigurations().getSensorParserConfig(sensorType);
-      if (config != null) {
-        cacheConfig.putAll(config.getCacheConfig());
-      }
-    }
-    Cache<CachingStellarProcessor.Key, Object> cache = CachingStellarProcessor.createCache(cacheConfig);
 
-    Context.Builder builder = new Context.Builder()
-            .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
-            .with(Context.Capabilities.GLOBAL_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig())
-            .with(Context.Capabilities.STELLAR_CONFIG, () -> parserConfigManager.getConfigurations().getGlobalConfig());
-    if (cache != null) {
-      builder = builder.with(Context.Capabilities.CACHE, () -> cache);
-    }
-    Context stellarContext = builder.build();
-    StellarFunctions.initialize(stellarContext);
-    return stellarContext;
-  }
 
   /**
    * Parsers can be configured to parse and pre-process messages in various ways, this is encapsulated in a raw message strategy
