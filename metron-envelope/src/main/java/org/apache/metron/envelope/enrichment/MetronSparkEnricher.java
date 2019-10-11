@@ -1,6 +1,9 @@
 package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
+import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
+import com.github.benmanes.caffeine.cache.AsyncLoadingCache;
+import com.github.benmanes.caffeine.cache.CacheLoader;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import envelope.shaded.com.google.common.base.Preconditions;
@@ -53,12 +56,12 @@ AutoCloseable {
   @NotNull private String zookeeperQuorum;
   @NotNull private SparkRowEncodingStrategy encodingStrategy;
   @NotNull private String kafkaBrokers;
-  @NotNull private static ConcurrentHashMap<String, LoadingCache<CacheKey, JSONObject>> cacheMap = new ConcurrentHashMap<>();
+  @NotNull private static ConcurrentHashMap<EnrichmentAdapter<CacheKey>, AsyncLoadingCache<CacheKey, JSONObject>> cacheMap = new ConcurrentHashMap<>();
   private MetronErrorProcessor metronErrorProcessor;
 
   private String enrichmentType;
   private EnrichmentAdapter<CacheKey> adapter;
-  private transient LoadingCache<CacheKey, JSONObject> cache;
+  private transient AsyncLoadingCache<CacheKey, JSONObject> cache;
   private Long maxCacheSize;
   private Long maxTimeRetain;
   private boolean invalidateCacheOnReload = false;
@@ -99,7 +102,7 @@ AutoCloseable {
       initEnrichmentConfigManager(zookeeperQuorum);
     }
 
-    metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers, null);
+    metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers);
 
     if (this.maxCacheSize == null)
       throw new IllegalStateException("MAX_CACHE_SIZE_OBJECTS_NUM must be specified");
@@ -108,22 +111,22 @@ AutoCloseable {
     if (this.adapter == null)
       throw new IllegalStateException("Adapter must be specified");
 
-    final Supplier<LoadingCache<CacheKey, JSONObject>> cacheSupplier = () -> Caffeine.newBuilder()
+    final Supplier<AsyncLoadingCache<CacheKey, JSONObject>> cacheSupplier = () -> Caffeine.newBuilder()
             .maximumSize(maxCacheSize)
             .expireAfterWrite(maxTimeRetain, TimeUnit.MINUTES)
-            .build(key -> adapter.enrich(key));
+            .buildAsync((CacheLoader<CacheKey, JSONObject>) key -> adapter.enrich(key));
 
     // Make this cache global for this type of enrichment, so that it will cover enrichment
     // operations over multiple spark partitions
     if (invalidateCacheOnReload) {
       // Force creation of a new cache
-      cache = cacheMap.compute(enrichmentType, (k, existingCache) -> {
-        if (existingCache != null) existingCache.cleanUp();
+      cache = cacheMap.compute(adapter, (k, existingCache) -> {
+        if (existingCache != null) existingCache.synchronous().cleanUp();
         return cacheSupplier.get();
       });
     } else {
       // Re-use existing cache if present, otherwise create
-      cache = cacheMap.computeIfAbsent(enrichmentType, k -> cacheSupplier.get());
+      cache = cacheMap.computeIfAbsent(adapter, k -> cacheSupplier.get());
     }
 
     boolean success = adapter.initializeAdapter(enrichmentConfigManager.getConfigurations().getGlobalConfig());
@@ -186,44 +189,35 @@ AutoCloseable {
    */
   @NotNull
   @Override
-  public Iterable<Row> apply(@Nullable Row nullableRow) {
-    if (nullableRow == null) {
+  public Iterable<Row> apply(@Nullable Row row) {
+    if (row == null) {
       LOG.warn("Passed a null row - skipping");
       return Collections.emptyList();
     }
-    @NotNull final Row row = Objects.requireNonNull(nullableRow);
+    Stream<RowWithSchema> serialisedMessages = Stream.empty();
+    try {
+      // Deserialise message from spark row
+      Stream<JSONObject> deSerialisedMessages = Stream.of(row)
+              .map(convertSparkErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
+                      x -> encodingStrategy.decodeParsedMessageFromKafka(x)))
+              .flatMap( x -> x.filterAndProcessErrors( error -> metronErrorProcessor.handleMetronError(error)));
 
-    // Deserialise message from spark row
-    Stream<Either<MetronError, JSONObject>> deSerialisedMessages = Stream.of(row)
-            .map(convertSparkErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
-                    x -> encodingStrategy.decodeParsedMessageFromKafka(x)));
+      // enrich message with configured enrichment
+      Stream<JSONObject> enrichedMessages = deSerialisedMessages
+              .flatMap(this::enrichMessage)
+              .flatMap( x -> x.filterAndProcessErrors( error -> metronErrorProcessor.handleMetronError(error)));
 
-    // enrich message with configured enrichment
-    Stream<Either<MetronError, JSONObject>> enrichedMessages = deSerialisedMessages
-            .flatMap(Either::getDataStream) // filters out decode errors and converts to JSONObjects
-            .flatMap(this::enrichMessage);
-
-    // Serialise message back into spark row
-    Stream<Either<MetronError, RowWithSchema>> serialisedMessages = enrichedMessages
-            .flatMap(Either::getDataStream) // filters out enrich errors and converts to RowWithSchema
-            .map(convertErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
-                    x -> encodingStrategy.encodeEnrichedMessageIntoSparkRow(x)));
-
-    // handle any errors that occurred during the previous 3 steps
-    Stream.of(
-            deSerialisedMessages.flatMap(Either::getErrorStream), // filters for and extracts MetronErrors
-            enrichedMessages.flatMap(Either::getErrorStream), // filters for and extracts MetronErrors
-            serialisedMessages.flatMap(Either::getErrorStream) // filters for and extracts MetronErrors
-            )
-            .flatMap(Function.identity()) // flatten to a simple stream of MetronErrors
-            .forEach( err -> {
-              LOG.warn("Error occurred during enriching: {}", err.getJSONObject().toJSONString());
-              metronErrorProcessor.handleMetronError(err);
-            });
+      // Serialise message back into spark row
+      serialisedMessages = enrichedMessages
+              .map(convertErrorsToMetronErrors(Constants.ErrorType.ENRICHMENT_ERROR,
+                      x -> encodingStrategy.encodeEnrichedMessageIntoSparkRow(x)))
+              .flatMap( x-> x.filterAndProcessErrors( error -> metronErrorProcessor.handleMetronError(error)));
+    } catch (Exception ex) {
+      LOG.error("Unforeseen error during enrichment", ex);
+    }
 
     // return all successfully enriched, serialised messages back to caller
     return serialisedMessages
-            .flatMap(Either::getDataStream)  // filters for and extracts Spark Rows
             .collect(Collectors.toList());
   }
 
@@ -269,7 +263,8 @@ AutoCloseable {
               adapter.logAccess(cacheKey);
               prefix = adapter.getOutputPrefix(cacheKey);
               perfLog.mark("enrich");
-              enrichedField = cache.get(cacheKey);
+              // for now we are not using async features
+              enrichedField = cache.get(cacheKey).get();
               perfLog.log("enrich", "key={}, time to run enrichment type={}", key, enrichmentType);
 
               if (enrichedField == null)

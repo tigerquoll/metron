@@ -172,6 +172,15 @@ public class MetronConfigLoader implements ConfigLoader, ProvidesAlias {
   }
 
   @Override
+  /**
+   * Read in configuration from envelope config file
+   * The following is pulled from the Envelope Config file
+   * kafka/zk
+   * Enrichment Configuration
+   *
+   * The following is pulled from zookeeper:
+   * Parser Configuration
+   */
   public void configure(Config config) {
     adaptorType = config.getString(CONFIG_ADAPTOR_TYPE);
     sparkRowEncodingStrategy = config.getString(SPARK_ROW_ENCODING_STRATEGY);

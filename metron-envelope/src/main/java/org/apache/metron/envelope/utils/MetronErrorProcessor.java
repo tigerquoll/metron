@@ -27,7 +27,7 @@ public class MetronErrorProcessor {
   private static volatile KafkaProducer<String,String> metronErrorKafkaProducer;
 
   // Map between SensorType and the relevant errorHandling logic
-  private Map<String, MetronErrorHandler> metronErrorHandlers = null;
+  private Map<String, MetronErrorHandler> metronErrorHandlers = Collections.emptyMap();
   private MetronErrorHandler defaultErrorHandler;
 
   /**
@@ -45,6 +45,17 @@ public class MetronErrorProcessor {
         metronErrorKafkaProducer = new KafkaProducer<>(props);
       }
     }
+  }
+
+  /**
+   * Constructor
+   * @param kafkaBrokers Kafka broker to send errors to.
+   */
+  public MetronErrorProcessor(String kafkaBrokers) {
+    if (metronErrorKafkaProducer == null) {
+      initMetronErrorKafkaProducer(kafkaBrokers);
+    }
+    defaultErrorHandler = new MetronErrorHandlerImpl(metronErrorKafkaProducer, Constants.ERROR_STREAM);
   }
 
   /**

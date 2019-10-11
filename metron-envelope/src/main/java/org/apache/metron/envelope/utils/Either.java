@@ -2,6 +2,7 @@ package org.apache.metron.envelope.utils;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import shaded.parquet.org.codehaus.jackson.impl.StreamBasedParserBase;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -75,6 +76,10 @@ public abstract class Either<E, D> {
   public abstract <T> Optional <T> map(@NotNull Function<? super D,T> mapper) ;
 
   public abstract void forEach(@NotNull Consumer<D> action);
+
+  public abstract void forEach(Consumer<E> errorAction, Consumer<D> dataAction);
+
+  public abstract Stream<D> filterAndProcessErrors(Consumer<E> errorAction);
 
   /**
    * A Result value that may be null
@@ -165,6 +170,15 @@ public abstract class Either<E, D> {
     @Override
     public void forEach(@NotNull Consumer<D> action) {
       action.accept(resultVal);
+    }
+
+    public void forEach(Consumer<E> errorAction, Consumer<D> dataAction) {
+      dataAction.accept(resultVal);
+    }
+
+    @Override
+    public Stream<D> filterAndProcessErrors(Consumer<E> errorAction) {
+      return getDataStream();
     }
 
     @Override
@@ -303,6 +317,16 @@ public abstract class Either<E, D> {
 
     @Override
     public void forEach(@NotNull Consumer<D> action) {
+    }
+
+    public void forEach(Consumer<E> errorAction, Consumer<D> dataAction) {
+      errorAction.accept(errorVal);
+    }
+
+    @Override
+    public Stream<D> filterAndProcessErrors(Consumer<E> errorAction) {
+      errorAction.accept(error());
+      return Stream.empty();
     }
 
     @Override

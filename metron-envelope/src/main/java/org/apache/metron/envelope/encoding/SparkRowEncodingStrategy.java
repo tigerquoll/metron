@@ -66,7 +66,7 @@ public interface SparkRowEncodingStrategy extends Serializable {
    * @param row Message to decode
    * @return JSONObject containing the message
    */
-  JSONObject decodeParsedMessageFromKafka(@NotNull Row row);
+  JSONObject decodeParsedMessageFromKafka(@NotNull Row row) throws JsonProcessingException;
 
   /**
    * Encode a metron enrichmented message into a Spark row
