@@ -26,10 +26,13 @@ import org.apache.metron.common.utils.LazyLogger;
 import org.apache.metron.common.utils.LazyLoggerFactory;
 import org.apache.metron.enrichment.cache.CacheKey;
 import org.apache.metron.enrichment.interfaces.EnrichmentAdapter;
+import org.apache.metron.enrichment.parallel.EnrichmentStrategies;
+import org.apache.metron.enrichment.parallel.EnrichmentStrategy;
 import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
 import org.apache.metron.envelope.utils.Either;
 import org.apache.metron.envelope.utils.MetronErrorProcessor;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
+import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.Row;
 import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
@@ -57,20 +60,40 @@ import static org.apache.metron.envelope.utils.ErrorUtils.convertSparkErrorsToMe
 /**
  * Provides the business logic of mapping un-enriched messages to enriched messages
  */
-public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, Row>, AutoCloseable {
-  @NotNull private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronUnifiedPartitionMapper.class);
-  @NotNull private static final String ZOOKEEPER = "ZookeeperQuorum";
-  @NotNull private static final String KAFKA_BROKERS = "KafkaBrokers";
-  @NotNull private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
-  private Map<String, EnrichmentAdapter<CacheKey>> enrichmentsByType = null;
-  private Map<String,String> additionalConfig;
-  private String zookeeperQuorum;
-  private SparkRowEncodingStrategy encodingStrategy;
-  private String kafkaBrokers;
-  private  MetronErrorProcessor metronErrorProcessor;
+public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, Row>,  AutoCloseable {
+  private static final String ENRICHMENT_STRATEGY = "enrichmentStrategy";
+  private static final LazyLogger LOG = LazyLoggerFactory.getLogger(MetronUnifiedPartitionMapper.class);
+  private static final String ZOOKEEPER = "ZookeeperQuorum";
+  private static final String KAFKA_BROKERS = "KafkaBrokers";
+  private static final String SPARK_ROW_ENCODING = "SparkRowEncodingStrategy";
+  transient private Map<String, EnrichmentAdapter<CacheKey>> enrichmentsByType = null;
+  transient private MetronErrorProcessor metronErrorProcessor;
+  transient private boolean initialised = false;
+  transient private Map<String,String> additionalConfig;
+  transient private String zookeeperQuorum;
+  transient private String kafkaBrokers;
+  transient private SparkRowEncodingStrategy encodingStrategy;
+  transient private Broadcast<String> workerConfigBroadcast;
+  transient private EnrichmentStrategies enrichmentStrategy;
 
-  public MetronUnifiedPartitionMapper(String jsonConfig) throws IOException {
+  /**
+   * THe Constructor is typically called in the context of the driver.
+   * It will store the reference to the configuration data so that is will be
+   * serialised and passed to the worker, we it can then be processed
+   * @param workerConfigBroadcast JSON String containing config for enrichments
+   * @throws IOException
+   */
+  public MetronUnifiedPartitionMapper(Broadcast<String> workerConfigBroadcast)  {
+    this.workerConfigBroadcast = workerConfigBroadcast;
+  }
+
+  /**
+   * This should be called in the context of the worker - so it time to hydrate the
+   * configuration, creating all the relevant enrichment objects and Kafka clients
+   */
+  public void init() throws IOException {
     // write Json out to temp file
+    String jsonConfig = workerConfigBroadcast.getValue();
     Path tempConfigFile = Files.createTempFile("worker-config",".json.tmp");
     Files.write(tempConfigFile, jsonConfig.getBytes(Charsets.UTF_8));
     // read back in as config structure
@@ -82,6 +105,9 @@ public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, 
     encodingStrategy = (SparkRowEncodingStrategy) instantiateClass(rowEncodingStrategy);
     encodingStrategy.init();
 
+    String enrichmentStrategyName = Objects.requireNonNull(config.getString(ENRICHMENT_STRATEGY), "EnrichmentStrategy required");
+    enrichmentStrategy = EnrichmentStrategies.valueOf(enrichmentStrategyName);
+
     // Read in additional config, flatten values to strings even if they are nested JSON objects
     additionalConfig = config
             .getObject("config")
@@ -90,7 +116,7 @@ public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, 
             .stream()
             .collect(Collectors.toMap(Object::toString, Object::toString));
 
-    // read in Enrichments:
+    // read in Enrichment Configuration:
     // enrichments are defined as
     // enrichments : [
     // { class: 'a.b.c.d.enrichmentClass1', config : { 'var1': value1, 'var2': value2} }
@@ -107,22 +133,65 @@ public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, 
               .stream()
               .collect(Collectors.toMap(Object::toString, Object::toString));
       enrichment.initializeAdapter(enrichmentConfiguration);
-      // todo: what is the key supposed to be????
+      // todo: confirm what the key supposed to be????
       enrichmentsByType.put(enrichment.getClass().getSimpleName(), enrichment);
     }
 
     metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers);
+    initialised = true;
   }
 
+  @Override
+  public Iterator<Row> call(Iterator<Row> input) throws Exception {
+    if (!initialised) {
+      init();
+    }
+    Stream<RowWithSchema> serialisedMessages;
+
+    // Convert input iterator into a steam
+    final Iterable<Row> iterable = () -> input;
+    final Stream<Row> inputRowStream = StreamSupport.stream(iterable.spliterator(), false);
+    try (UnifiedSparkEnricher unifiedSparkEnricher = new UnifiedSparkEnricher(
+            zookeeperQuorum,
+            kafkaBrokers,
+            encodingStrategy,
+            enrichmentsByType,
+            enrichmentStrategy,
+            additionalConfig
+            )) {
+      // deserialize the message from spark back into a JSONObject
+      Stream<JSONObject> deSerialisedMessages = inputRowStream
+              .map(convertSparkErrorsToMetronErrors(ENRICHMENT_ERROR, encodingStrategy::decodeParsedMessageFromKafka))
+              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
+
+      // Start enrichment activities
+      List<Map.Entry<JSONObject, List<CompletableFuture<Either<MetronError, JSONObject>>>>> enrichmentPendingMessages = deSerialisedMessages
+              // Store the original document as well as a list of pending enrichments
+              .map(x -> new AbstractMap.SimpleEntry<>(x, unifiedSparkEnricher.asyncEnrich(x)))
+              // Streams are lazy by default, this will force all documents in the stream to be processed
+              .collect(Collectors.toList());
+
+      // Extract and fold-in retrieved enrichment results, pass off errors to Kafka to process
+      Stream<JSONObject> enrichedMessages = enrichmentPendingMessages.stream()
+              .flatMap(MetronUnifiedPartitionMapper::processEnrichmentResults)
+              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
+
+      // Serialise message back into a spark row
+      serialisedMessages = enrichedMessages
+              .map(convertErrorsToMetronErrors(ENRICHMENT_ERROR, encodingStrategy::encodeEnrichedMessageIntoSparkRow))
+              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
+    }
+    // cast type to Interface type it implements for compatibility with Spark
+    return serialisedMessages.map( x -> (Row)x).iterator();
+  } // call()
 
   /**
    * Extract the results of the lookups, merge in returned data,
    * @param asyncEnrichmentResults JSONObject to enrich + List of Future Enrichment requests
-   * @return Stream of at least 1 Either.data and 0 or more Metron Errors wrapped in Either objects
+   * @return Stream of at least 1 Either.data and 0 or more Metron Errors wrapped in Either.error objects
    */
   private static Stream< Either<MetronError,JSONObject> > processEnrichmentResults(
           Map.Entry<JSONObject,List<CompletableFuture<Either<MetronError,JSONObject>>>> asyncEnrichmentResults) {
-
     final JSONObject messageToEnrich = asyncEnrichmentResults.getKey();
     final List<CompletableFuture<Either<MetronError,JSONObject>>> pendingEnrichments = asyncEnrichmentResults.getValue();
 
@@ -146,45 +215,6 @@ public class MetronUnifiedPartitionMapper implements MapPartitionsFunction<Row, 
     results.add( Either.Data(messageToEnrich) );
     return results.stream();
   }
-
-  @Override
-  public Iterator<Row> call(Iterator<Row> input) throws Exception {
-
-    Stream<RowWithSchema> serialisedMessages;
-
-    // Convert input iterator into a steam
-    final Iterable<Row> iterable = () -> input;
-    final Stream<Row> inputRowStream = StreamSupport.stream(iterable.spliterator(), false);
-    try (UnifiedSparkEnricher unifiedSparkEnricher = new UnifiedSparkEnricher(
-            zookeeperQuorum,
-            kafkaBrokers,
-            encodingStrategy,
-            enrichmentsByType,
-            additionalConfig)) {
-      // deserialize the message from spark back into a JSONObject
-      Stream<JSONObject> deSerialisedMessages = inputRowStream
-              .map(convertSparkErrorsToMetronErrors(ENRICHMENT_ERROR, encodingStrategy::decodeParsedMessageFromKafka))
-              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
-
-      // Start enrichment activities
-      List<Map.Entry<JSONObject, List<CompletableFuture<Either<MetronError, JSONObject>>>>> enrichmentPendingMessages = deSerialisedMessages
-              // Store the original document as well as a list of pending enrichments
-              .map(x -> new AbstractMap.SimpleEntry<>(x, unifiedSparkEnricher.asyncEnrich(x)))
-              // Streams are lazy by default, this will force all documents in the stream to be processed
-              .collect(Collectors.toList());
-
-      // Extract and fold-in retrieved enrichment results
-      Stream<JSONObject> enrichedMessages = enrichmentPendingMessages.stream()
-              .flatMap(MetronUnifiedPartitionMapper::processEnrichmentResults)
-              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
-
-      // Serialise message back into a spark row
-      serialisedMessages = enrichedMessages
-              .map(convertErrorsToMetronErrors(ENRICHMENT_ERROR, encodingStrategy::encodeEnrichedMessageIntoSparkRow))
-              .flatMap(x -> x.filterAndProcessErrors(metronErrorProcessor::handleMetronError));
-    }
-    return serialisedMessages.map( x -> (Row)x).iterator();
-  } // call()
 
   @Override
   public void close() {

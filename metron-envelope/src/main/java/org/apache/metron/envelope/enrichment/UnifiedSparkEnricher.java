@@ -27,7 +27,6 @@ import org.apache.metron.enrichment.adapters.maxmind.geo.GeoLiteCityDatabase;
 import org.apache.metron.enrichment.cache.CacheKey;
 import org.apache.metron.enrichment.configuration.Enrichment;
 import org.apache.metron.enrichment.interfaces.EnrichmentAdapter;
-import org.apache.metron.enrichment.parallel.ConcurrencyContext;
 import org.apache.metron.enrichment.parallel.EnrichmentContext;
 import org.apache.metron.enrichment.parallel.EnrichmentStrategies;
 import org.apache.metron.enrichment.parallel.WorkerPoolStrategies;
@@ -38,7 +37,6 @@ import org.apache.metron.envelope.utils.Either;
 import org.apache.metron.envelope.utils.MetronErrorProcessor;
 import org.apache.metron.stellar.dsl.Context;
 import org.apache.metron.stellar.dsl.StellarFunctions;
-import org.apache.spark.api.java.Optional;
 import org.jetbrains.annotations.NotNull;
 import org.json.simple.JSONObject;
 import org.slf4j.Logger;
@@ -52,6 +50,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
+import static org.apache.metron.envelope.utils.ErrorUtils.checkState;
 
 /**
  * A spark port of the unified enrichment/threat intel bolt.  In contrast to the split/enrich/join
@@ -64,13 +63,7 @@ import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
  * from Storm.  This will greater facilitate reuse.
  */
 public class UnifiedSparkEnricher implements AutoCloseable {
-  private final SparkRowEncodingStrategy encodingStrategy;
-  private MetronErrorProcessor metronErrorProcessor;
-  public static class Perf {} // used for performance logging
-  private PerformanceLogger perfLog; // not static bc multiple bolts may exist in same worker
-
   protected static final Logger LOG = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
-
   /**
    * The number of threads in the threadpool.  One threadpool is created per process.
    * This is a topology-level configuration
@@ -80,8 +73,16 @@ public class UnifiedSparkEnricher implements AutoCloseable {
    * The type of threadpool to create. This is a topology-level configuration.
    */
   public static final String THREADPOOL_TYPE_TOPOLOGY_CONF = "metron.threadpool.type";
-
   private static volatile EnrichmentConfigManager enrichmentConfigManager;
+  private static volatile Context stellarContext;
+
+  public static class Perf {} // used for performance logging
+  private PerformanceLogger perfLog; // not static bc multiple bolts may exist in same worker
+
+  /**
+   * Wrapper around a kafka client, configured to send messages to a particular topic
+   */
+  private MetronErrorProcessor metronErrorProcessor;
 
   /**
    * The enricher implementation to use.  This will do the parallel enrichment via a thread pool.
@@ -92,12 +93,9 @@ public class UnifiedSparkEnricher implements AutoCloseable {
    * The strategy to use for this enrichment bolt.  Practically speaking this is either
    * enrichment or threat intel.  It is configured in the topology itself.
    */
-  private EnrichmentStrategies strategy;
-  /**
-   * Determine the way to retrieve the message.  This must be specified in the topology.
-   */
+  private EnrichmentStrategies enrichmentStrategy;
 
-  private static volatile Context stellarContext;
+  ;
   /**
    * An enrichment type to adapter map.  This is configured externally.
    */
@@ -120,46 +118,59 @@ public class UnifiedSparkEnricher implements AutoCloseable {
   private EnrichmentContext enrichmentContext;
   private boolean captureCacheStats = true;
 
-  private static synchronized void initStellarContext(String zookeeperQuorum, EnrichmentConfigManager enrichmentConfigManager) {
-    Context tmpStellarContext = new Context.Builder()
-            .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
-            .with(Context.Capabilities.GLOBAL_CONFIG, () -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
-            .with(Context.Capabilities.STELLAR_CONFIG,() -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
-            .build();
-    StellarFunctions.initialize(tmpStellarContext);
-    stellarContext = tmpStellarContext;
+  /**
+   * The Stellar context contains a zookeeper client is quite expansive to construct/teardown
+   * So we keep this context running through all the partition processing via keeping it static
+   * @param zookeeperQuorum Zookeeper Address
+   * @param enrichmentConfigManager Enrichment Config Manager
+   */
+  private static synchronized void initStaticStellarContext(String zookeeperQuorum, EnrichmentConfigManager enrichmentConfigManager) {
+    if (stellarContext == null) {
+      Context tmpStellarContext = new Context.Builder()
+              .with(Context.Capabilities.ZOOKEEPER_CLIENT, () -> ZookeeperClient.getZKInstance(zookeeperQuorum))
+              .with(Context.Capabilities.GLOBAL_CONFIG, () -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
+              .with(Context.Capabilities.STELLAR_CONFIG, () -> enrichmentConfigManager.getConfigurations().getGlobalConfig())
+              .build();
+      StellarFunctions.initialize(tmpStellarContext);
+      stellarContext = tmpStellarContext;
+    } // double check to ensure correct operation
   }
 
-  private static synchronized void initEnrichmentConfigManager(String zookeeperQuorum) {
-    EnrichmentConfigManager tmpEnrichmentConfigManager = new EnrichmentConfigManager(
-            Objects.requireNonNull(zookeeperQuorum)
-    );
-    tmpEnrichmentConfigManager.init();
-    enrichmentConfigManager = tmpEnrichmentConfigManager;
+  /**
+   * The enrichmentConfigManager contains a zookeeper client that keeps a local copy
+   * of the configuration state synchronised with what is in Zookeeper
+   * We keep a single instance of the config manager because zookeeper connections
+   * are quite resource intensive.
+   * @param zookeeperQuorum Zookeeper address
+   */
+  private static synchronized void initStaticEnrichmentConfigManager(String zookeeperQuorum) {
+    if (enrichmentConfigManager == null) {
+      EnrichmentConfigManager tmpEnrichmentConfigManager = new EnrichmentConfigManager(
+              Objects.requireNonNull(zookeeperQuorum)
+      );
+      tmpEnrichmentConfigManager.init();
+      enrichmentConfigManager = tmpEnrichmentConfigManager;
+    } // double check to ensure correct operation
   }
 
   public UnifiedSparkEnricher(@NotNull String zookeeperQuorum, @NotNull String kafkaBrokers,
                               @NotNull SparkRowEncodingStrategy rowEncodingStrategy,
                               @NotNull Map<String, EnrichmentAdapter<CacheKey>> enrichmentsByType,
+                              @NotNull EnrichmentStrategies enrichmentStrategy,
                               Map<String, String> additionalConfig) {
-    this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
+    // determine way to retrieve message
+    SparkRowEncodingStrategy encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
     if (enrichmentConfigManager == null) {
-      initEnrichmentConfigManager(zookeeperQuorum);
+      initStaticEnrichmentConfigManager(zookeeperQuorum);
     }
     if (stellarContext == null) {
-      initStellarContext(zookeeperQuorum, enrichmentConfigManager);
+      initStaticStellarContext(zookeeperQuorum, enrichmentConfigManager);
     }
-    metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers);
-
-    if (this.maxCacheSize == null) {
-      throw new IllegalStateException("MAX_CACHE_SIZE_OBJECTS_NUM must be specified");
-    }
-    if (this.maxTimeRetain == null) {
-      throw new IllegalStateException("MAX_TIME_RETAIN_MINUTES must be specified");
-    }
-    if (this.enrichmentsByType.isEmpty()) {
-      throw new IllegalStateException("Adapter must be specified");
-    }
+    metronErrorProcessor = new MetronErrorProcessor(Objects.requireNonNull(kafkaBrokers, "KafkaBrokers must be specified"));
+    this.enrichmentStrategy = Objects.requireNonNull(enrichmentStrategy, "enrichmentStrategy must be specified");;
+    Objects.requireNonNull(maxCacheSize, "MAX_CACHE_SIZE_OBJECTS_NUM must be specified");
+    Objects.requireNonNull(maxTimeRetain,"MAX_TIME_RETAIN_MINUTES must be specified" );
+    checkState(!this.enrichmentsByType.isEmpty(), "Adapter must be specified");
 
     for(Entry<String, EnrichmentAdapter<CacheKey>> adapterKv : enrichmentsByType.entrySet()) {
       boolean success = adapterKv.getValue().initializeAdapter(getConfigurations().getGlobalConfig());
@@ -250,7 +261,7 @@ public class UnifiedSparkEnricher implements AutoCloseable {
    * @return
    */
   public UnifiedSparkEnricher withStrategy(String strategy) {
-    this.strategy = EnrichmentStrategies.valueOf(strategy);
+    this.enrichmentStrategy = EnrichmentStrategies.valueOf(strategy);
     return this;
   }
 
@@ -290,7 +301,7 @@ public class UnifiedSparkEnricher implements AutoCloseable {
       LOG.warn("Unable to find SensorEnrichmentConfig for sourceType: {}", sourceType);
       config = new SensorEnrichmentConfig();
     }
-    return enricher.apply(message, strategy, config, perfLog);
+    return enricher.apply(message, enrichmentStrategy, config, perfLog);
   }
 
   @Override

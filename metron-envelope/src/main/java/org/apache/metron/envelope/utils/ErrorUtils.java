@@ -15,6 +15,16 @@ import java.util.function.Function;
  * Utility classes to make error handling inside lambdas a lot cleaner
  */
 public class ErrorUtils {
+  public static void checkState(boolean validState) {
+    checkState(validState, "illegal state detected");
+  }
+
+  public static void checkState(boolean validState, String message) throws IllegalStateException {
+    if (!validState) {
+      throw new IllegalStateException(message);
+    }
+  }
+
   /**
    * Specialised Pair class to contain Error Information
    * @param <E> Type of the Exception

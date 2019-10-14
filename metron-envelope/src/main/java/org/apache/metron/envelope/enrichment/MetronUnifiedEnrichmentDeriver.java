@@ -87,13 +87,18 @@ public class MetronUnifiedEnrichmentDeriver implements Deriver, ProvidesAlias {
   }
 
   @Override
+  /**
+   * This is still happening on the spark driver
+   */
   public Dataset<Row> derive(@NotNull Map<String, Dataset<Row>> srcDataset) throws IOException {
     Preconditions.checkArgument(srcDataset.size() == 1, getAlias() + " should only have one dependant dataset");
     final Dataset<Row> src = Iterables.getOnlyElement(srcDataset.entrySet()).getValue();
     final SparkRowEncodingStrategy encodingStrategy = this.encodingStrategy;
-    final String workerConfig = workerConfigBroadcast.getValue();
-    final MetronUnifiedPartitionMapper partitionEnricher = new MetronUnifiedPartitionMapper(workerConfig);
-    final Dataset<Row> dst = src.mapPartitions(partitionEnricher, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
+    final Broadcast<String> workerConfigBroadcast = this.workerConfigBroadcast;
+    final MetronUnifiedPartitionMapper unifiedPartitionMapper = new MetronUnifiedPartitionMapper(workerConfigBroadcast);
+    // todo - preemptively serialise and validate configuration items here for ease of debugging
+    // The contents of this call are executed on worker nodes
+    final Dataset<Row> dst = src.mapPartitions(unifiedPartitionMapper, RowEncoder.apply(encodingStrategy.getOutputSparkSchema()));
     return dst;
   }
 }
