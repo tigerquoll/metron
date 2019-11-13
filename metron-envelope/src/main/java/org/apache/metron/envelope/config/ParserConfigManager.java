@@ -22,6 +22,6 @@ import org.apache.metron.common.configuration.writer.ConfigurationsStrategies;
 
 public class ParserConfigManager extends MetronConfigManager<ParserConfigurations> {
   public ParserConfigManager(String zookeeperURL) {
-    super(zookeeperURL, ConfigurationsStrategies.ENRICHMENT.toString());
+    super(zookeeperURL, ConfigurationsStrategies.PARSERS.toString());
   }
 }

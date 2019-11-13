@@ -54,7 +54,7 @@ import static org.apache.metron.envelope.utils.ErrorUtils.checkState;
 
 /**
  * A spark port of the unified enrichment/threat intel bolt.  In contrast to the split/enrich/join
- * bolts above, this handles the entire enrichment lifecycle in one bolt using a threadpool to
+ * bolts above, this handles the entire enrichment lifecycle in one go using a threadpool from the cache to
  * enrich in parallel.
  *
  * From an architectural perspective, this is a divergence from the polymorphism based strategy we have

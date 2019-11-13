@@ -1,11 +1,27 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.metron.envelope.enrichment;
 
 import com.cloudera.labs.envelope.spark.RowWithSchema;
-import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
 import com.github.benmanes.caffeine.cache.AsyncLoadingCache;
 import com.github.benmanes.caffeine.cache.CacheLoader;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.typesafe.config.Config;
 import envelope.shaded.com.google.common.base.Preconditions;
 import org.apache.metron.common.Constants;
 import org.apache.metron.common.configuration.enrichment.SensorEnrichmentConfig;
@@ -19,7 +35,7 @@ import org.apache.metron.enrichment.interfaces.EnrichmentAdapter;
 import org.apache.metron.enrichment.utils.EnrichmentUtils;
 import org.apache.metron.envelope.ZookeeperClient;
 import org.apache.metron.envelope.config.EnrichmentConfigManager;
-import org.apache.metron.envelope.encoding.SparkRowEncodingStrategy;
+import org.apache.metron.envelope.adaptors.BaseMapper;
 import org.apache.metron.envelope.utils.Either;
 import org.apache.metron.envelope.utils.MetronErrorProcessor;
 import org.apache.metron.stellar.dsl.Context;
@@ -29,42 +45,58 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.json.simple.JSONObject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static org.apache.metron.common.Constants.STELLAR_CONTEXT_CONF;
 import static org.apache.metron.envelope.utils.ErrorUtils.convertErrorsToMetronErrors;
 import static org.apache.metron.envelope.utils.ErrorUtils.convertSparkErrorsToMetronErrors;
 
-public class MetronSparkEnricher implements envelope.shaded.com.google.common.base.Function<Row, Iterable<Row>>,
-AutoCloseable {
+/**
+ * Uses an adapter to enrich telemetry messages with additional metadata
+ * entries from multiple sources is one go. For a list of available enrichment adapters see
+ * {@link org.apache.metron.enrichment.adapters}.
+ * <p>
+ * At the moment of release the following enrichment adapters are available:
+ * <p>
+ * <ul>
+ * <li>geo = attaches geo coordinates to IPs
+ * <li>whois = attaches whois information to domains
+ * <li>host = attaches reputation information to known hosts
+ * <li>CIF = attaches information from threat intelligence feeds
+ * </ul>
+ * <p>
+ * Enrichments are optional
+ *
+ * Enrichments can be applied as a number of separately threaded and run modules
+ *  enrichmentParallelType=SingleEnrichmentMapper
+ * or by threading the enrichment of entire spark partition in one go
+ *  enrichmentParallelType=MultipleEnrichmentMapper
+ **/
+public class SingleEnrichmentMapper extends BaseMapper {
   public static class Perf {} // used for performance logging
-  private static LazyLogger LOG = LazyLoggerFactory.getLogger(MetronSparkEnricher.class);
+  private static LazyLogger LOG = LazyLoggerFactory.getLogger(SingleEnrichmentMapper.class);
   private static volatile Context stellarContext;
   private static volatile EnrichmentConfigManager enrichmentConfigManager;
-
   private PerformanceLogger perfLog; // not static bc multiple bolts may exist in same worker
-  @NotNull private String zookeeperQuorum;
-  @NotNull private SparkRowEncodingStrategy encodingStrategy;
-  @NotNull private String kafkaBrokers;
   @NotNull private static ConcurrentHashMap<EnrichmentAdapter<CacheKey>, AsyncLoadingCache<CacheKey, JSONObject>> cacheMap = new ConcurrentHashMap<>();
-  private MetronErrorProcessor metronErrorProcessor;
-
   private String enrichmentType;
   private EnrichmentAdapter<CacheKey> adapter;
   private transient AsyncLoadingCache<CacheKey, JSONObject> cache;
   private Long maxCacheSize;
   private Long maxTimeRetain;
   private boolean invalidateCacheOnReload = false;
+  private MetronErrorProcessor metronErrorProcessor;
 
   private static synchronized void initStellarContext(String zookeeperQuorum, EnrichmentConfigManager enrichmentConfigManager) {
     Context tmpStellarContext = new Context.Builder()
@@ -84,32 +116,17 @@ AutoCloseable {
     enrichmentConfigManager = tmpEnrichmentConfigManager;
   }
 
-  /**
-   * This object gets reconstructed for every partition of data,
-   * so it re-reads its configuration fresh from zookeeper
-   * @param zookeeperQuorum Zookeeper address of configuration
-   * @param rowEncodingStrategy row encoder to use
-   * @param kafkaBrokers Handles any processing errors
-   */
-  MetronSparkEnricher(@NotNull String zookeeperQuorum,
-                      @NotNull String kafkaBrokers,
-                      @NotNull SparkRowEncodingStrategy rowEncodingStrategy) {
-    this.zookeeperQuorum = Objects.requireNonNull(zookeeperQuorum);
-    this.encodingStrategy = Objects.requireNonNull(rowEncodingStrategy);
-    this.kafkaBrokers = Objects.requireNonNull(kafkaBrokers);
-
+  @Override
+  protected Config init() throws IOException {
+    Config config = super.init();
     if (enrichmentConfigManager == null) {
       initEnrichmentConfigManager(zookeeperQuorum);
     }
-
     metronErrorProcessor = new MetronErrorProcessor(kafkaBrokers);
 
-    if (this.maxCacheSize == null)
-      throw new IllegalStateException("MAX_CACHE_SIZE_OBJECTS_NUM must be specified");
-    if (this.maxTimeRetain == null)
-      throw new IllegalStateException("MAX_TIME_RETAIN_MINUTES must be specified");
-    if (this.adapter == null)
-      throw new IllegalStateException("Adapter must be specified");
+    Objects.requireNonNull(maxCacheSize,"MAX_CACHE_SIZE_OBJECTS_NUM must be specified" );
+    Objects.requireNonNull(maxTimeRetain, "MAX_TIME_RETAIN_MINUTES must be specified");
+    Objects.requireNonNull(adapter, "Adapter must be specified");
 
     final Supplier<AsyncLoadingCache<CacheKey, JSONObject>> cacheSupplier = () -> Caffeine.newBuilder()
             .maximumSize(maxCacheSize)
@@ -120,10 +137,7 @@ AutoCloseable {
     // operations over multiple spark partitions
     if (invalidateCacheOnReload) {
       // Force creation of a new cache
-      cache = cacheMap.compute(adapter, (k, existingCache) -> {
-        if (existingCache != null) existingCache.synchronous().cleanUp();
-        return cacheSupplier.get();
-      });
+      cache = cacheMap.compute(adapter, (k, existingCache) -> cacheSupplier.get());
     } else {
       // Re-use existing cache if present, otherwise create
       cache = cacheMap.computeIfAbsent(adapter, k -> cacheSupplier.get());
@@ -135,24 +149,45 @@ AutoCloseable {
       throw new IllegalStateException("Could not initialize enrichment adapter...");
     }
     perfLog = new PerformanceLogger(() -> enrichmentConfigManager.getConfigurations().getGlobalConfig(),
-            MetronSparkEnricher.Perf.class.getName());
+            SingleEnrichmentMapper.Perf.class.getName());
 
     if (stellarContext == null) {
       initStellarContext(zookeeperQuorum, enrichmentConfigManager);
     }
+
+    return config;
   }
 
 
+  /**
+   * This function transforms input data by enriching it via configured Metron Enricher
+   * Configuration information is passed via Zookeeper, and json Broadcast
+   * The call to this function should occur in the context of the spark worker nodes
+   * @param input Parsed Metron data transformed to spark rows
+   * @return Enriched spark rows
+   * @throws Exception if an error occurs
+   */
   @Override
-  public void close() throws Exception {
-    metronErrorProcessor.close();
+  public Iterator<Row> call(Iterator<Row> input) throws Exception {
+    if (initNeeded()) {
+      init();
+    }
+    // Convert input iterator into a steam of spark input rows
+    final Iterable<Row> iterable = () -> input;
+    final Stream<Row> inputRowStream = StreamSupport.stream(iterable.spliterator(), false);
+    return inputRowStream
+            .flatMap(this::processMessage)
+            .map(x -> (Row) x) // Java type system not good enough to realise x implements row already
+            .iterator();
   }
+
+  SingleEnrichmentMapper() {}
 
   /**
    * @param enrichment enrichment
    * @return Instance of this class
    */
-  public MetronSparkEnricher withEnrichment(Enrichment enrichment) {
+  public SingleEnrichmentMapper withEnrichment(Enrichment enrichment) {
     this.enrichmentType = enrichment.getType();
     this.adapter = enrichment.getAdapter();
     return this;
@@ -162,7 +197,7 @@ AutoCloseable {
    * @param maxCacheSize Maximum size of cache before flushing
    * @return Instance of this class
    */
-  public MetronSparkEnricher withMaxCacheSize(long maxCacheSize) {
+  public SingleEnrichmentMapper withMaxCacheSize(long maxCacheSize) {
     this.maxCacheSize = maxCacheSize;
     return this;
   }
@@ -171,12 +206,12 @@ AutoCloseable {
    * @param maxTimeRetain Maximum time to retain cached entry before expiring
    * @return Instance of this class
    */
-  public MetronSparkEnricher withMaxTimeRetain(long maxTimeRetain) {
+  public SingleEnrichmentMapper withMaxTimeRetain(long maxTimeRetain) {
     this.maxTimeRetain = maxTimeRetain;
     return this;
   }
 
-  public MetronSparkEnricher withCacheInvalidationOnReload(boolean cacheInvalidationOnReload) {
+  public SingleEnrichmentMapper withCacheInvalidationOnReload(boolean cacheInvalidationOnReload) {
     this.invalidateCacheOnReload= cacheInvalidationOnReload;
     return this;
   }
@@ -188,11 +223,10 @@ AutoCloseable {
    * Output spark sql rows of processed data (success and errors) with schema 'outputSchema'
    */
   @NotNull
-  @Override
-  public Iterable<Row> apply(@Nullable Row row) {
+  private Stream<? extends Row> processMessage(@Nullable Row row) {
     if (row == null) {
       LOG.warn("Passed a null row - skipping");
-      return Collections.emptyList();
+      return Stream.empty();
     }
     Stream<RowWithSchema> serialisedMessages = Stream.empty();
     try {
@@ -217,8 +251,7 @@ AutoCloseable {
     }
 
     // return all successfully enriched, serialised messages back to caller
-    return serialisedMessages
-            .collect(Collectors.toList());
+    return serialisedMessages;
   }
 
   /**
@@ -297,8 +330,8 @@ AutoCloseable {
     perfLog.log("execute", "key={}, elapsed time to run execute", key);
 
     return Stream.concat(
-            Stream.of(enrichedMessage).map(Either::Data),  // Wrap enriched message in an 'Either' Struct
-            errors.stream().map(Either::Error) // Wrap MetronErrors in 'Either' Structs
+            Stream.of(enrichedMessage).map(Either::Data),  // Wrap enriched message in an 'Either' Objects
+            errors.stream().map(Either::Error) // Wrap MetronErrors in 'Either' Objects
     );
   }
 

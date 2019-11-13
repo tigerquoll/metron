@@ -215,6 +215,14 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     return index;
   }
 
+  /**
+   * Prepare the row encoder
+   * @param jsonFactory  Factory for encoding multiple values into a single value
+   * @param dataFieldType Whether the single value we encode into is text or binary
+   * @param kafkaSerializationType Whether we encode to Kafka as text or avro
+   * @param fieldLayoutType whether we encode everything into a single value, or just the non-std values.
+   * @param avroSchemaName if we are binary encoding with Avro, what is the name
+   */
   void init(JsonFactory jsonFactory, DataFieldType dataFieldType,
             KafkaSerializationType kafkaSerializationType,
             FieldLayoutType fieldLayoutType,
@@ -290,7 +298,7 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     if (metronMessage != null) {
       switch (fieldLayoutType) {
         case combined:
-          // combined field layout has no core fields
+          // combined field layout (everything encoded into one field) has no core fields
           final List<Object> noCoreFields = new ArrayList<>();
           rowWithSchema = encodeCombined(metronMessage, noCoreFields);
           break;
@@ -307,6 +315,12 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     return rowWithSchema;
   }
 
+  /**
+   * Core plus encoding leaves well known fields separate for efficieny
+   * @param metronMessage message to encode
+   * @return Encoded message
+   * @throws JsonProcessingException
+   */
   private RowWithSchema encodeCorePlus(@NotNull JSONObject metronMessage) throws JsonProcessingException {
     final List<Object> encodedRowValues = new ArrayList<>();
     encodedRowValues.add(VERSION_ONE);
@@ -324,7 +338,15 @@ public abstract class AbstractSparkRowEncodingStrategy implements SparkRowEncodi
     return encodeCombined(metronMessage, encodedRowValues);
   }
 
-  @NotNull
+  /**
+   * 'Combined' encoding serialises values into a single field
+   * @param metronMessage
+   * @param existingEncodedValues The record containing the single encoded field may have other fields in it
+   *                              This List contains the raw encoded values of this for Spark Encoding purposes
+   * @return Spark Row containing encoded data (usually a single field, but is ExistingEnodedValues values is non null
+   *           Then that row may contain multiple fields.
+   * @throws JsonProcessingException
+   */
   private RowWithSchema encodeCombined(@NotNull JSONObject metronMessage,
                                        @NotNull List<Object> existingEncodedValues
   ) throws JsonProcessingException {

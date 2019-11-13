@@ -1,2 +1,2 @@
-org.apache.metron.envelope.enrichment.MetronEnrichmentDeriver
+org.apache.metron.envelope.enrichment.OldMetronEnrichmentDeriver
 org.apache.metron.envelope.parsing.MetronParserDeriver

@@ -173,7 +173,7 @@ public class SparkParallelEnricher {
           final CacheKey cacheKey = new CacheKey(field, value, config);
           final String prefix = adapter.getOutputPrefix(cacheKey);
 
-          // Asynchronously look up / cache result, convert returned data as configured and transform exceptions into MetronERrors
+          // Asynchronously look up / cache result, convert returned data as configured and transform exceptions into MetronErrors
           CompletableFuture<Either<MetronError,JSONObject>> futureEnrichment = enrichmentCaches.get(adapter)
               .get(cacheKey)
               .thenApply( enrichedField -> {
